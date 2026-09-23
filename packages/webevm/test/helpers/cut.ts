@@ -17,6 +17,13 @@
  *   - 'rpc-block'          : the RPC block and the EVM describe the SAME block
  *                            (miner / mixHash / logsBloom), on both sides of a
  *                            dumpState/loadState round trip, plus an old dump
+ *   - 'concurrency'        : TWO EXECUTIONS AT ONCE must not destroy each other's
+ *                            state — deterministic tick-offset scans of a read
+ *                            overlapping a write, two writes overlapping, state
+ *                            torn at a message-frame boundary, an `eth_call`
+ *                            committing its OWN write, a non-executing read going
+ *                            dirty mid-transaction, and the serialisation point
+ *                            not waiting for itself
  *   - 'estimate-gas'       : `eth_estimateGas` answers with the smallest gas LIMIT
  *                            at which the request succeeds (a deployment through
  *                            the CREATE2 factory mines at it, and fails one gas
@@ -63,6 +70,7 @@ import {runStorageOverlayChecks} from './storage-overlay.js';
 import {runEngineSeamChecks} from './engine-seam.js';
 import {runRpcBlockChecks} from './rpc-block.js';
 import {runEstimateGasChecks} from './estimate-gas.js';
+import {runConcurrencyChecks} from './concurrency.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -137,6 +145,19 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'estimate-gas') {
 			try {
 				results.estimateGas = await runEstimateGasChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// concurrency: the node serialises its whole public surface, so two requests
+		// in flight cannot pop each other's checkpoint levels off the ONE state
+		// manager they share. Deterministic tick-offset scans, one fresh node per
+		// offset — a test that only SOMETIMES overlaps would be worthless here.
+		if (ctx.params.mode === 'concurrency') {
+			try {
+				results.concurrency = await runConcurrencyChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

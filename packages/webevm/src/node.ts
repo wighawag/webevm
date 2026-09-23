@@ -21,6 +21,17 @@
  *
  * Transport-agnostic: just `request()` (async) + mine/dump/load. Knows nothing
  * about Workers — see ./worker-entry.ts for the optional comlink wrapper.
+ *
+ * ONE THING AT A TIME. Every public entry point on the returned node —
+ * `request`, `mine`, `dumpState`, `loadState`, `getStateRoot` — runs through
+ * {@link SlimNode}'s serialisation point, so this node executes exactly one
+ * request at a time no matter how many are in flight. It is not an optimisation
+ * and it is not politeness: the node's state manager is a STACK of checkpoints
+ * shared by reads and transactions alike, `commit()` merges downward and
+ * `revert()` discards without either knowing who opened the level it acts on, so
+ * two overlapping executions destroy each other's writes. See the comment at
+ * `serialise` below and
+ * `docs/adr/0012-one-request-at-a-time-the-node-serialises-its-whole-public-surface.md`.
  */
 import {createVM, type VM} from '@ethereumjs/vm';
 import {MerkleStateManager} from '@ethereumjs/statemanager';
@@ -237,6 +248,17 @@ interface StoredBlock {
 }
 
 /**
+ * The no-op the node's serialisation chain passes in BOTH handler positions
+ * (`run.then(swallow, swallow)`), which is what keeps the chain alive across a
+ * FAILED request: `tail` must always be a promise that FULFILS, since a rejection
+ * left on it would reject every request queued behind the one that failed and turn
+ * one bad transaction into a dead node. It takes no arguments because it uses
+ * neither the value nor the reason; both are the caller's, and both have already
+ * been delivered to whoever awaited that request.
+ */
+function swallow(): void {}
+
+/**
  * ONE SUBMITTED TRANSACTION, as the node carries it from `eth_sendRawTransaction*`
  * (or the `evm_*As` cheats) to the block it is mined in: the parsed transaction,
  * its wire bytes (`dumpState` and `eth_getTransactionByHash` report them) and
@@ -282,6 +304,116 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		stateMode === 'trie'
 			? new MerkleStateManager()
 			: new OverlayStorageStateManager();
+
+	/**
+	 * THE SERIALISATION POINT: the tail of a promise chain that every public entry
+	 * point queues its work onto, so this node runs exactly ONE piece of work at a
+	 * time. It is declared HERE, beside `sm`, because the thing it protects is that
+	 * object and nothing else.
+	 *
+	 * ## What was shared, and why it corrupts
+	 *
+	 * A state manager is a STACK of checkpoint levels. `checkpoint()` pushes a
+	 * level, a write lands in the TOP one, `commit()` merges the top level into the
+	 * one below and pops it, `revert()` pops it and throws it away. Neither
+	 * `commit` nor `revert` knows WHO opened the level it is acting on — there is no
+	 * handle, no owner and no identity — so the stack is only meaningful while a
+	 * single execution owns it.
+	 *
+	 * Both halves of the node open levels on THIS one stack. `engine.transact`
+	 * (`runTx`) checkpoints, executes and commits; the default engine's
+	 * `engine.call` checkpoints and reverts, which is what makes an `eth_call` PURE
+	 * and is a requirement of that EVM, not an option (see ./engine.ts). Both are
+	 * `async` and `@ethereumjs/evm` yields to the microtask queue while it
+	 * interprets, so before this existed a read arriving mid-transaction produced:
+	 *
+	 * ```
+	 * tx   checkpoint   [base, tx]
+	 * call checkpoint   [base, tx, call]   <- the read arrives mid-execution
+	 * tx   write        -> lands in the TOP level, which is the CALL's
+	 * tx   commit       -> merges that level down and pops it
+	 * call revert       -> pops the merged level: the transaction's write is GONE
+	 * ```
+	 *
+	 * Measured through this node's own RPC surface: a whole transaction lost (a
+	 * plain transfer loses the sender's NONCE, so every later transaction from that
+	 * account is refused as "nonce too high"), state TORN at a message-frame
+	 * boundary (the EVM checkpoints per frame, so the read's level can land between
+	 * an inner frame's checkpoint and its commit, leaving a state no execution could
+	 * produce), an `eth_call`'s OWN write committed rather than reverted, and —
+	 * because this is not about reads — two overlapping TRANSACTIONS losing a write
+	 * the same way, both reporting success and both holding a receipt.
+	 *
+	 * ## Why the lock is HERE rather than around `engine.call`
+	 *
+	 * Because write-versus-write interleaves too, so a lock inside the read path
+	 * would fix half of it. And because it must be INSIDE the node: the Worker
+	 * transport forwards straight to `node.request` and comlink delivers
+	 * concurrently, so a lock in a transport protects only consumers who use that
+	 * transport. It is per NODE, which is per STATE MANAGER by construction —
+	 * `createNode` builds its own `sm` and takes no state manager option, and an
+	 * injected engine binds to the first node it is given to and refuses a second.
+	 *
+	 * ## Why EVERY request and not only the executing ones
+	 *
+	 * A read that never touches the EVM never checkpoints and so can never corrupt
+	 * anything — but it reads the live stack INCLUDING uncommitted levels, so it
+	 * reports a state no block contains. Measured, with a single transfer in flight:
+	 * `eth_getBalance` saw the sender DEBITED from tick 5 and
+	 * `eth_getTransactionCount` saw the nonce ADVANCED from tick 6, while
+	 * `eth_blockNumber` still said 0 — and that reading is exactly what an
+	 * overlapping `eth_call` could then destroy. The node's own block/receipt maps
+	 * are written per-transaction inside the mining loop too, so a mid-execution
+	 * `eth_getTransactionReceipt` can name a `blockHash` no lookup resolves yet.
+	 * The cost is real and is stated in the ADR: a cheap read issued during a
+	 * 209 ms `eth_estimateGas` search used to answer in 0.1 ms and now waits for it.
+	 * A per-method exemption list was rejected because it is a promise that has to
+	 * be re-proven every time a method is added, by somebody who will not know that
+	 * is what they are doing.
+	 *
+	 * ## The shape
+	 *
+	 * `tail` is ALWAYS a promise that fulfils — the assignment below swallows both
+	 * outcomes — so a failing request cannot poison the chain and cannot stop the
+	 * queue behind it. Nothing inside the node re-enters a serialised entry point
+	 * (the internal `request`, `mineBlock`, `dumpState`, `loadState` and
+	 * `currentStateRoot` are all called directly, and only the returned object's
+	 * members are wrapped), so a single chain cannot deadlock against itself.
+	 *
+	 * ## The one way a CONSUMER can deadlock it, and why it is NOT detected
+	 *
+	 * Control leaves the node twice while the chain is held, and both times into a
+	 * consumer's code. They are not the same risk:
+	 *
+	 *  - an `onNewHead` callback is emitted WITHOUT being awaited, so a request it
+	 *    issues queues behind the current one and runs when the chain drains. That
+	 *    is the game-loop pattern (refetch on every head) and it is ALLOWED.
+	 *  - a `persistence.save()` hook IS awaited — so that the dump it is handed is a
+	 *    snapshot of a settled state and so that the request does not resolve before
+	 *    the write is durable — which means a hook that AWAITS a call back into the
+	 *    node waits for itself forever. That rule is documented, on
+	 *    `PersistenceAdapter.save` where an adapter is written, and enforced nowhere.
+	 *
+	 * IT IS DELIBERATELY NOT ENFORCED, and this is the interesting part. The obvious
+	 * guard — a flag raised around the awaited hook, with `serialise` refusing while
+	 * it is set — WAS BUILT AND REMOVED, because it cannot work. The flag is held
+	 * across the hook's I/O, the `await` yields the event loop for that whole
+	 * duration, and JavaScript offers no way (no `AsyncLocalStorage` in a browser) to
+	 * tell a request issued by the hook's own stack from one issued by anybody else
+	 * in that window. Measured on a 20 ms save: a plain `setInterval` poller that had
+	 * never heard of persistence got four rejections, each telling it that IT had
+	 * caused a deadlock. A false refusal with a confident wrong diagnosis is worse
+	 * than the hang it replaces, and it fires for every consumer who has persistence
+	 * and a poller, which is this package's main use. So the honest arrangement is
+	 * the one below: everyone queues, and the one pathological hook is a documented
+	 * rule rather than a guess dressed as a check. See ADR 0012.
+	 */
+	let tail: Promise<void> = Promise.resolve();
+	function serialise<T>(job: () => Promise<T>): Promise<T> {
+		const run = tail.then(job);
+		tail = run.then(swallow, swallow);
+		return run;
+	}
 
 	// Touched-account set for the trie-mode dump (storage is read back via the
 	// trie's own dumpStorage). We record the addresses each tx touches at the NODE
@@ -485,12 +617,15 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 	// newHeads subscribers.
 	const headSubs = new Set<(h: {number: number; hash: string}) => void>();
 
+	// THE INTERVAL TIMER IS ARMED AT THE BOTTOM OF THIS FUNCTION, not here, at the
+	// `miningConfig.type === 'interval'` block just above the `return`. The reason
+	// is ordering: a timer armed at this point can fire while the
+	// REST OF CONSTRUCTION is still running, and the construction-time
+	// `loadState(saved)` that the persistence option performs is deliberately not
+	// serialised (nothing can reach the node yet, because it has not been returned).
+	// Those two together are the one interleaving the serialisation point does not
+	// cover, so the timer starts after the node is fully built instead.
 	let intervalTimer: ReturnType<typeof setInterval> | undefined;
-	if (miningConfig.type === 'interval') {
-		intervalTimer = setInterval(() => {
-			void mineBlock();
-		}, miningConfig.intervalMs);
-	}
 
 	/**
 	 * THE BLOCK'S LOGS BLOOM: the OR of its receipts' own blooms, which is what a
@@ -1901,12 +2036,48 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		if (saved && saved.chainId === chainId) await loadState(saved);
 	}
 
+	// The dump is taken inside the chain, so it is a snapshot of a settled state,
+	// and the hook is AWAITED inside it too, so a request does not resolve before
+	// its state is durable (`test/persistence-reload.spec.ts` reloads the page on
+	// the strength of that). A request arriving while the hook runs simply queues.
 	async function persistIfNeeded() {
-		if (options.persistence) await options.persistence.save(await dumpState());
+		if (!options.persistence) return;
+		await options.persistence.save(await dumpState());
+	}
+
+	/**
+	 * ARM INTERVAL MINING, once the node is otherwise built.
+	 *
+	 * COALESCED, which a plain `setInterval` is not. The timer keeps firing while
+	 * the chain is busy, so without this a period shorter than the work in flight
+	 * (say `intervalMs: 50` against the 209 ms `eth_estimateGas` search ADR 0012
+	 * measures) appends a mine per tick and they drain afterwards as a burst of
+	 * empty blocks — and if mining outruns the period the queue never stops growing.
+	 * At most ONE tick is ever waiting: the flag is cleared when the job STARTS, so
+	 * a tick that arrives during a mine still schedules the next one.
+	 *
+	 * It goes THROUGH the serialisation point like every other way a block gets
+	 * mined, because a timer is a concurrency source the consumer never sees: it
+	 * fires whenever the event loop reaches it, which before this meant in the
+	 * middle of whatever `eth_call` happened to be executing.
+	 */
+	let minePending = false;
+	if (miningConfig.type === 'interval') {
+		intervalTimer = setInterval(() => {
+			if (minePending) return;
+			minePending = true;
+			// The flag is cleared as the job STARTS rather than when it finishes, so a
+			// tick arriving during a mine still schedules the next one, and a mine that
+			// THROWS cannot strand the flag and silently stop interval mining.
+			void serialise(() => {
+				minePending = false;
+				return mineBlock();
+			});
+		}, miningConfig.intervalMs);
 	}
 
 	// wrap mine() to persist
-	async function mine() {
+	async function mineAndPersist() {
 		const r = await mineBlock();
 		await persistIfNeeded();
 		return r;
@@ -1928,11 +2099,27 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		return out;
 	}
 
+	// THE PUBLIC SURFACE, AND THE ONLY PLACE THE LOCK IS TAKEN. Everything above
+	// this line calls the node's internals DIRECTLY and never through here, which is
+	// what makes one promise chain safe: `persistingRequest` reaches `baseRequest`,
+	// `mineAndPersist` reaches `mineBlock` and `persistIfNeeded` reaches `dumpState`,
+	// none of them re-entering a wrapper. Add an entry point below and it must be
+	// serialised too; call one of these wrappers from inside the node and it will
+	// wait for itself forever.
+	//
+	// `dispose` is deliberately NOT serialised: it stops the interval timer and drops
+	// the newHeads subscribers, touches no state, and would be useless at the back of
+	// a queue it is meant to wind down. Note what that does NOT mean: it does not
+	// CANCEL anything already queued. Work accepted before `dispose` still runs to
+	// completion, including a `persistence.save()`, and only the timer stops adding
+	// more. A caller that needs the node quiet should stop issuing requests and await
+	// the ones it holds.
 	return {
-		request: persistingRequest,
-		mine,
-		dumpState,
-		loadState,
+		request: (args: RequestArguments) =>
+			serialise(() => persistingRequest(args)),
+		mine: () => serialise(mineAndPersist),
+		dumpState: () => serialise(dumpState),
+		loadState: (state: SerializedState) => serialise(() => loadState(state)),
 		stateMode,
 		senderMode,
 		// Identity only: the engine object itself stays internal, so the reading is a
@@ -1945,7 +2132,11 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 					"no state root in 'none' mode — create the node with stateMode:'trie' for a real Merkle-Patricia root",
 				);
 			}
-			return currentStateRoot();
+			// SERIALISED like the rest, because this one READS BY WRITING: in trie mode
+			// `currentStateRoot` flushes the state manager's cache into the trie, so a
+			// root taken mid-transaction would both report an uncommitted state and
+			// push it into the trie on the way.
+			return serialise(currentStateRoot);
 		},
 		onNewHead(cb) {
 			headSubs.add(cb);

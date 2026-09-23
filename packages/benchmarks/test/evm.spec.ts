@@ -90,7 +90,29 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED FOURTEEN TIMES SINCE. Most recent first:
+ * RE-PINNED FIFTEEN TIMES SINCE. Most recent first:
+ *
+ * 424.7 -> 424.8 KB raw / 128.4 -> 128.1 KB gzip, by
+ * `one-request-at-a-time-the-node-serialises-its-whole-public-surface`: the node
+ * now serves ONE request at a time. Reads and transactions open checkpoint levels
+ * on the one state manager a node owns, `commit()` merges the top level down and
+ * `revert()` discards it, and neither knows who opened it, so two overlapping
+ * executions destroyed each other's writes while BOTH reported success (a lost
+ * nonce that then refused every later transaction from that sender, state torn at
+ * a message-frame boundary, an `eth_call` committing its own `SSTORE`, two
+ * transactions handed the same block number). The 0.1 KB is the whole fix: a
+ * promise-chain serialisation point in `src/node.ts` (`serialise`, the `swallow`
+ * that keeps the chain alive across a failed request, the five wrappers on the
+ * returned node, and a coalescing interval timer). It is in the CORE graph
+ * because the dispatcher is, on every engine, and a lock inside either engine
+ * would have covered only half of it. Note the gzip bound moved DOWN while raw
+ * moved up: both are the measured numbers from a fresh build, and the change
+ * deletes as well as adds (`persistIfNeeded` and the `mine` wrapper both got
+ * smaller). It buys every consumer, JS-only included, the property a receipt is
+ * supposed to have: if it is not reverted, the state moved, and it moved
+ * CONSISTENTLY. See
+ * `docs/adr/0012-one-request-at-a-time-the-node-serialises-its-whole-public-surface.md`.
+ * Still zero bytes of `revm-wasm`.
  *
  * 422.5 -> 424.7 KB raw / 127.6 -> 128.4 KB gzip, by
  * `estimategas-returns-a-gas-limit-not-the-gas-consumed`: `eth_estimateGas` no
@@ -304,7 +326,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 424.7, gzipKB: 128.4};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 424.8, gzipKB: 128.1};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

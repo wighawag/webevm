@@ -72,6 +72,13 @@
  *                      `createEngine: () => createRevmEngine({wasm})` belongs. The
  *                      main thread must be REJECTED with the reason rather than
  *                      left pending forever
+ *   - 'concurrency'  : the SHARED concurrency battery (helpers/concurrency.ts) with
+ *                      this engine installed. Its read-versus-write scans cannot
+ *                      fail here — revm's `call` cannot commit, so it opens no
+ *                      checkpoint level — but revm reads AND WRITES the node's
+ *                      state through the same stacks, so two overlapping
+ *                      TRANSACTIONS interleave exactly as they do on the default
+ *                      engine. The half of ADR 0012 no engine-local fix covers
  *   - 'invalid-transactions': the SHARED refusal battery
  *                      (helpers/invalid-transactions.ts) — a replayed nonce, a
  *                      far-future nonce, an unaffordable transaction and a gas
@@ -94,6 +101,7 @@ import {runRevmAccessList} from './revm-access-list.js';
 import {runRevmInvalidTransactions} from './revm-invalid-transactions.js';
 import {runRevmStorageKeys} from './revm-storage-keys.js';
 import {runRevmStateRoundTrip} from './revm-state-roundtrip.js';
+import {runRevmConcurrency} from './revm-concurrency.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {
 	runRevmPersistWrite,
@@ -267,6 +275,19 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'state-roundtrip') {
 			try {
 				results.revmStateRoundTrip = await runRevmStateRoundTrip();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The SHARED concurrency battery with revm installed. What it carries HERE is
+		// write-versus-write and the dirty read: this engine cannot commit from a
+		// `call`, so it is the transaction path and the node's own dispatcher that
+		// two overlapping requests meet on.
+		if (ctx.params.mode === 'concurrency') {
+			try {
+				results.revmConcurrency = await runRevmConcurrency();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

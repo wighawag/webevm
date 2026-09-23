@@ -41,7 +41,23 @@ export type MiningConfig =
 export interface PersistenceAdapter {
 	/** Load the single serialized state record (or null on first run). */
 	load(): Promise<SerializedState | null>;
-	/** Persist the single serialized state record. */
+	/**
+	 * Persist the single serialized state record.
+	 *
+	 * DO NOT CALL BACK INTO THE NODE FROM HERE. A node serves one request at a
+	 * time, and this hook is AWAITED inside the request that triggered it — that
+	 * is what makes `state` a snapshot of a settled chain rather than one caught
+	 * mid-transaction, and what stops a request resolving before its state is
+	 * durable. A `node.request(...)` awaited from inside this function therefore
+	 * waits for a queue that is waiting for this function, and the node stops.
+	 * Everything you could ask it for is already in `state`; if you need the node
+	 * itself, do that work after `save()` resolves.
+	 *
+	 * It is a rule rather than a check because the two cases cannot be told apart:
+	 * see `docs/adr/0012-one-request-at-a-time-the-node-serialises-its-whole-public-surface.md`.
+	 * Other callers are unaffected — a request issued elsewhere while this hook is
+	 * running simply queues behind it.
+	 */
 	save(state: SerializedState): Promise<void>;
 }
 

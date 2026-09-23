@@ -183,6 +183,25 @@ method-not-found (`-32601`) — it never fakes a result.
   checkpoint that is reverted, and reset the EVM journal's warm/access tracking +
   the EIP-2200 original-storage cache per call (so a repeated warm-SSTORE estimate
   doesn't under-report and cause out-of-gas reverts).
+- **One request at a time.** A node serves `request` / `mine` / `dumpState` /
+  `loadState` / `getStateRoot` through a single queue, so a request is always
+  answered against a SETTLED state. This is not politeness: reads and transactions
+  share one checkpoint stack, `commit()` merges the top level down and `revert()`
+  discards it, and neither knows who opened it — so two overlapping executions used
+  to destroy each other's writes while BOTH reported success (a lost nonce, state
+  torn at a message-frame boundary, an `eth_call` committing its own `SSTORE`, two
+  transactions given the same block number). Fire as many requests as you like from
+  as many pollers as you like; they queue. What it costs is latency, not
+  correctness: a cheap read issued during a 209 ms `eth_estimateGas` search waits
+  for it (0.1 ms → 208 ms, measured), which is why a game loop should not estimate
+  every frame. One consumer-visible rule follows, and it applies to exactly one
+  place: a `persistence.save()` hook must not await a call back into the node,
+  because it runs while the queue is held so that its dump is a real snapshot and
+  so that your request does not resolve before the write is durable. Everything
+  else is unaffected — an `onNewHead` subscriber MAY call back (its request queues
+  behind the block it was told about), and a request from anywhere else during a
+  save simply waits its turn.
+  [ADR 0012](docs/adr/0012-one-request-at-a-time-the-node-serialises-its-whole-public-surface.md)
 - **`eth_estimateGas` returns a gas LIMIT, not the gas consumed.** It used to
   report `executionGasUsed` + intrinsic gas, which is exact and is the wrong
   question: under EIP-150's 63/64 rule a `CALL`/`CREATE` is forwarded at most
