@@ -1,2 +1,30 @@
 packages:
   - "packages/*"
+
+# BUILD SCRIPTS WE DELIBERATELY DO NOT RUN, listed so the decision is RECORDED
+# rather than re-asked on every install.
+#
+# pnpm does not run a dependency's install scripts unless it is allowed to, and
+# it reports the ones it skipped. From pnpm 11 that report is a hard ERROR
+# (`ERR_PNPM_IGNORED_BUILDS`, exit 1), which fails `pnpm build` and `pnpm test`
+# through their dependency check — so "decide later" is not a state this repo can
+# sit in, and the honest answer is written down here.
+#
+# Both of these skip cleanly because their platform builds arrive PREBUILT as
+# optional dependencies, which is the normal path on every platform CI and this
+# project target:
+#   - esbuild          : the binary is `@esbuild/<platform>` and pnpm links it;
+#                        the postinstall only copies/links it into `esbuild/bin`.
+#                        Verified: `esbuild --version` answers, and the whole
+#                        Playwright suite bundles through it.
+#   - @parcel/watcher  : `node-gyp-build` picks `@parcel/watcher-<platform>` when
+#                        one exists and compiles only when none does. Verified:
+#                        it loads and `subscribe` is a function. (It is a
+#                        transitive dep of `as-soon`, i.e. `pnpm dev`'s watcher.)
+#
+# If a platform ever has no prebuild, the symptom is a LOUD module-load failure,
+# not a silent wrong answer — at which point move that entry to
+# `onlyBuiltDependencies` rather than deleting this block.
+ignoredBuiltDependencies:
+  - "@parcel/watcher"
+  - esbuild

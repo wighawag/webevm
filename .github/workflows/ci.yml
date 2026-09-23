@@ -16,8 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # NO `version` INPUT, deliberately: the action reads `packageManager` from
+      # the root package.json, which is the ONE place this repo's pnpm version is
+      # written (and what a developer's bare `pnpm` self-forwards to, so CI and a
+      # laptop cannot drift). This is not merely tidier: the action REFUSES to run
+      # with both, failing with "Multiple versions of pnpm specified" whenever the
+      # `version` input is not string-equal to the `packageManager` field — which
+      # an exact-version-plus-hash pin never is.
       - uses: pnpm/action-setup@v4
-        with: {version: 10}
       - uses: actions/setup-node@v4
         with: {node-version: 24, cache: pnpm}
       - run: pnpm install --frozen-lockfile
@@ -40,8 +46,9 @@ jobs:
         browser: [chromium, webkit]
     steps:
       - uses: actions/checkout@v4
+      # The version comes from `packageManager` in the root package.json; see the
+      # note on the `check` job above.
       - uses: pnpm/action-setup@v4
-        with: {version: 10}
       - uses: actions/setup-node@v4
         with: {node-version: 24, cache: pnpm}
       - run: pnpm install --frozen-lockfile
