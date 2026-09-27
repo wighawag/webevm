@@ -108,6 +108,11 @@ function nodeProxy(node: SlimNode): SlimNode {
 		// newHeads over comlink: the callback arrives as a comlink proxy, and the
 		// unsubscribe going back must be marked as one too, or it clones as `{}`.
 		onNewHead: (cb) => proxy(node.onNewHead(cb)),
+		// The port arrives TRANSFERRED (the client marks it so), which makes it this
+		// thread's: the node serves it right here, and a consumer holding the other
+		// end talks to this worker directly. The handle going back carries a
+		// function, so it crosses as a proxy, like the unsubscribe above.
+		serveOn: async (port) => proxy(await node.serveOn(port)),
 		dispose: () => node.dispose(),
 	};
 	return forwarded;

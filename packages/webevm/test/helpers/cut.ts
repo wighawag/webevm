@@ -54,6 +54,10 @@
  *                            where the FACTORY belongs: the main thread must get
  *                            a REJECTION carrying the reason, never a promise that
  *                            never settles, and the worker must say so early too
+ *   - 'serve-on-port'      : a node SERVES its EIP-1193 `request` on a handed
+ *                            `MessagePort` (`node.serveOn(port)`), worker-hosted
+ *                            and main-thread alike, answering a consumer in
+ *                            ANOTHER worker with the page relaying nothing
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -74,6 +78,10 @@ import {runConcurrencyChecks} from './concurrency.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
+import {
+	serveOnPortFromWorker,
+	serveOnPortFromMainThread,
+} from './serve-on-port.js';
 import {runConformance} from './conformance.js';
 import {viemSurfaceProbe} from './viem-surface.js';
 import {runStateTests} from './statetest.js';
@@ -298,6 +306,19 @@ const cut: CodeUnderTest = {
 				// passes: an engine-shaped object, i.e. the non-promise branch of the
 				// message.
 				results.early = reportEarlySignal({id: 'pretend-engine'});
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// serve-on-port: the node serves `request` on a port it is handed, for a
+		// consumer in another worker; the same battery on both kinds of node.
+		if (ctx.params.mode === 'serve-on-port') {
+			try {
+				const workerUrl = String(ctx.params.workerUrl);
+				results.worker = await serveOnPortFromWorker(workerUrl);
+				results.mainThread = await serveOnPortFromMainThread(workerUrl);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

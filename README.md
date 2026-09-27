@@ -48,6 +48,8 @@ npm install comlink
 installed automatically; `comlink` is an optional peer used only by the Worker
 entry/client.)
 
+(`@eip-1193/over-port` is a direct dependency too: about 6 kB, with no runtime dependency of its own, and it is what `node.serveOn(port)` speaks. A consumer on the other end of that port installs it as well, for `providerOverPort`.)
+
 ## Usage (main thread)
 
 ```ts
@@ -133,6 +135,37 @@ gets that far). The recipe above is safe because `() => createRevmEngine({wasm})
 is synchronous at module scope: the factory defers the await into `createNode()`,
 which is one of the reasons `createEngine` is a function. If you must await
 something, do it INSIDE `createEngine`.
+
+### Serving the node to another worker (worker to worker)
+
+A consumer that runs in ANOTHER worker (an indexer, say) can use a worker-hosted node as its EIP-1193 provider directly, without the page relaying its requests. The page makes a `MessageChannel`, hands one end to the node with `node.serveOn(port)` (the client TRANSFERS it into the node's worker), and hands the other end to the consumer, which turns it back into a provider with [`@eip-1193/over-port`](https://www.npmjs.com/package/@eip-1193/over-port)'s `providerOverPort`:
+
+```ts
+// page
+import {createWorkerNode} from 'webevm/worker-client';
+
+const node = await createWorkerNode({worker: nodeWorker, chainId: 31337});
+const {port1, port2} = new MessageChannel();
+const served = await node.serveOn(port1);
+indexerWorker.postMessage({provider: port2}, [port2]);
+// later, to stop answering on that port: await served.close();
+
+// indexer worker
+import {providerOverPort} from '@eip-1193/over-port';
+
+self.addEventListener('message', (event) => {
+  if (event.data?.provider) {
+    const provider = providerOverPort(event.data.provider);
+    // provider.request({method: 'eth_blockNumber'}) goes straight to the node's worker
+  }
+});
+```
+
+Only `request` crosses; `onNewHead`, `mine` and the other controls stay with whoever holds `node`. An error the node raises arrives with its `code`, `message` and `data` (an unsupported method is still `-32601`). Call `serveOn` once per consumer: each call serves one port, each returns its own `close()`, and `node.dispose()` stops them all. Every request served this way queues on the node's one-request-at-a-time serialisation point like any other.
+
+**It is the same call on a main-thread node.** `createNode()`'s node has `serveOn(port)` too and serves the port in place, so the two kinds of node stay interchangeable. (A main-thread node needs nothing from this package for it anyway: `serveProvider(node, port)` from `@eip-1193/over-port` works on it directly, since a node is an object with a `request`.)
+
+**No page code relays the requests, but on Safari the page's thread still carries them.** WebKit routes `MessagePort` traffic between two workers through the main thread inside the engine, so a page that holds its thread busy stalls the consumer's requests until it yields (measured: zero answers during a one-second busy loop, all of them the moment it ends). Chromium carries them without the page's thread. Either way nothing in your page's JavaScript touches them.
 
 ## RPC surface (the contract)
 

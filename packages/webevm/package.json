@@ -54,6 +54,7 @@
 		"src"
 	],
 	"dependencies": {
+		"@eip-1193/over-port": "^0.1.0",
 		"@ethereumjs/block": "^10.1.2",
 		"@ethereumjs/common": "^10.1.2",
 		"@ethereumjs/evm": "^10.1.2",

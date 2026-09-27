@@ -5,7 +5,7 @@
  * thread) and `createWorkerNode()` (Worker) are interchangeable one-liners and
  * the consumer never hand-rolls the comlink plumbing.
  */
-import {wrap, proxy} from 'comlink';
+import {wrap, proxy, transfer, releaseProxy, type Remote} from 'comlink';
 // The api TYPE, from the module that defines it rather than from the one that
 // exposes it: this client drives ANY worker exposing it, including a consumer's
 // own `exposeNode({createEngine})` module. Type-only, so nothing is imported at
@@ -16,6 +16,7 @@ import type {
 	SlimNode,
 	RequestArguments,
 	SerializedState,
+	ServedPort,
 } from './types.js';
 
 export interface WorkerNodeOptions extends NodeOptions {
@@ -104,6 +105,26 @@ export async function createWorkerNode(
 				void unsub?.();
 			};
 		},
+		async serveOn(port: MessagePort) {
+			// TRANSFERRED, never cloned: a MessagePort cannot be cloned at all, and the
+			// point is that the port now belongs to the node's worker, so a consumer
+			// holding the other end reaches that worker without this thread in between.
+			//
+			// The cast restores what comlink's types cannot see: the worker-host proxy
+			// hands the `ServedPort` back wrapped in `proxy()`, so what arrives is a
+			// Remote (with a proxy to release), not a clone.
+			const served = (await remote.serveOn(
+				transfer(port, [port]),
+			)) as unknown as Remote<ServedPort>;
+			return {
+				async close() {
+					await served.close();
+					served[releaseProxy]();
+				},
+			};
+		},
+		// Terminating the worker also ends every port it was serving: a consumer's
+		// requests then get no answer, as they would from a stopped port.
 		async dispose() {
 			await remote.dispose();
 			worker.terminate();
