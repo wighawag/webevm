@@ -87,6 +87,9 @@ importers:
 
   packages/webevm:
     dependencies:
+      '@eip-1193/over-port':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@ethereumjs/block':
         specifier: ^10.1.2
         version: 10.1.2
@@ -236,6 +239,9 @@ packages:
     deprecated: this package has been merged into the main effect package
     peerDependencies:
       effect: ^3.9.2
+
+  '@eip-1193/over-port@0.1.0':
+    resolution: {integrity: sha512-oU2XYcgGwOYNE57tYswoD2CJc4tPlW9xtcsgEAgipXte2v9q//ss6CzLoNBvah8Uiz0nSJOm8BvpTwWpGqPhGg==}
 
   '@esbuild/aix-ppc64@0.27.7':
     resolution: {integrity: sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg==}
@@ -1868,6 +1874,9 @@ packages:
 
   effect@3.21.2:
     resolution: {integrity: sha512-rXd2FGDM8KdjSIrc+mqEELo7ScW7xTVxEf1iInmPSpIde9/nyGuFM710cjTo7/EreGXiUX2MOonPpprbz2XHCg==}
+
+  eip-1193@0.7.0:
+    resolution: {integrity: sha512-Xeq6sfTPuedLQ6pmNF42UjvmLjtB4utSBCekkAwe+AwrnbgdB6fhY9BZrQYFvb/DIUzlf1wBOdV0iWIT9A0/3g==}
 
   electron-to-chromium@1.5.366:
     resolution: {integrity: sha512-OlRuhb688YTCzzU3gXPLn6nGyd+F+53INE1qaKKlu6kETErE8FYsyDh0XqXEU+uBRn0MpCzz2vfNwORhkap8qg==}
@@ -3683,6 +3692,10 @@ snapshots:
     dependencies:
       effect: 3.21.2
       fast-check: 3.23.2
+
+  '@eip-1193/over-port@0.1.0':
+    dependencies:
+      eip-1193: 0.7.0
 
   '@esbuild/aix-ppc64@0.27.7':
     optional: true
@@ -6537,6 +6550,8 @@ snapshots:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 3.23.2
+
+  eip-1193@0.7.0: {}
 
   electron-to-chromium@1.5.366: {}
 

@@ -64,6 +64,12 @@ import {connectEngine, createEthereumjsEngine} from './engine.js';
 // Sender derivation stays the node's on every engine; what an engine may lend it
 // is the CURVE step. See ./sender-recovery.ts.
 import {recoverSender} from './sender-recovery.js';
+// `serveOn(port)`: EIP-1193 `request` over a MessagePort, in the wire format the
+// consumer's `providerOverPort` speaks. Imported HERE, the one place the node's
+// public surface is built, so every node (main-thread or worker-hosted) serves a
+// port the same way; see `serveOn` at the bottom of this file for why this is a
+// dependency of the core rather than of `webevm/worker-host` alone.
+import {serveProvider, type ServedProvider} from '@eip-1193/over-port';
 // The engine reports EXECUTION gas for a read and the node adds intrinsic gas on top;
 // an engine that charges intrinsic gas itself (revm) subtracts the SAME formula,
 // so it has exactly one home. See ./intrinsic-gas.ts.
@@ -616,6 +622,8 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 
 	// newHeads subscribers.
 	const headSubs = new Set<(h: {number: number; hash: string}) => void>();
+	// Ports `serveOn` is serving, so `dispose` can stop them all.
+	const servedPorts = new Set<ServedProvider>();
 
 	// THE INTERVAL TIMER IS ARMED AT THE BOTTOM OF THIS FUNCTION, not here, at the
 	// `miningConfig.type === 'interval'` block just above the `return`. The reason
@@ -2114,9 +2122,14 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 	// completion, including a `persistence.save()`, and only the timer stops adding
 	// more. A caller that needs the node quiet should stop issuing requests and await
 	// the ones it holds.
+	//
+	// `serveOn` is not serialised either, for the reason `dispose` is not: it
+	// touches no state. It only relays `request`, which IS serialised, so a request
+	// arriving over a served port queues exactly like one made directly.
+	const publicRequest = (args: RequestArguments) =>
+		serialise(() => persistingRequest(args));
 	return {
-		request: (args: RequestArguments) =>
-			serialise(() => persistingRequest(args)),
+		request: publicRequest,
 		mine: () => serialise(mineAndPersist),
 		dumpState: () => serialise(dumpState),
 		loadState: (state: SerializedState) => serialise(() => loadState(state)),
@@ -2142,9 +2155,36 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			headSubs.add(cb);
 			return () => headSubs.delete(cb);
 		},
+		// SERVE `request` ON A HANDED PORT, via `@eip-1193/over-port`, so a consumer
+		// on another thread uses this node through `providerOverPort(otherEnd)`.
+		//
+		// IT LIVES ON THE CORE NODE, NOT ONLY IN `webevm/worker-host`, so the two
+		// kinds of node stay interchangeable: `SlimNode` carries it, the one worker
+		// proxy forwards it (its `Required<SlimNode>` annotation demands that), and a
+		// main-thread node answers the same call in place. The price is that the
+		// core imports `@eip-1193/over-port` (about 6 kB of unminified JS, no
+		// runtime dependency of its own), which `webevm/worker-client` and
+		// `webevm/revm` still do not: the client only TRANSFERS the port, and
+		// the consumer brings its own `providerOverPort`.
+		//
+		// Only `request` is served, bound to the SERIALISED entry point above.
+		async serveOn(port: MessagePort) {
+			const server = serveProvider({request: publicRequest}, port);
+			servedPorts.add(server);
+			return {
+				async close() {
+					server.close();
+					servedPorts.delete(server);
+				},
+			};
+		},
 		async dispose() {
 			if (intervalTimer) clearInterval(intervalTimer);
 			headSubs.clear();
+			// A disposed node stops answering on every port it was serving, so a
+			// consumer is not left talking to a node its owner has let go of.
+			for (const server of servedPorts) server.close();
+			servedPorts.clear();
 		},
 	};
 }

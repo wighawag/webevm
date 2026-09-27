@@ -12,6 +12,7 @@ export {
 } from './persistence.js';
 export type {
 	SlimNode,
+	ServedPort,
 	NodeOptions,
 	MiningConfig,
 	StateMode,

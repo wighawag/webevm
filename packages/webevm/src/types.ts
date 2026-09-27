@@ -601,8 +601,38 @@ export interface SlimNode {
 	 * a receipt from this node can be attributed to this id.
 	 */
 	readonly engine: EngineInfo;
-	/** Stop timers / release resources. */
+	/**
+	 * SERVE this node's EIP-1193 `request` on `port`, for whoever holds the other
+	 * end of its `MessageChannel`: that side calls `providerOverPort(port)` from
+	 * `@eip-1193/over-port` and gets a provider. The concrete case is a consumer in
+	 * ANOTHER worker (an indexer, say) talking to a worker-hosted node directly,
+	 * with the page that made the channel relaying nothing once the ports are
+	 * handed over.
+	 *
+	 * On a worker-hosted node the port is TRANSFERRED into the node's worker (it
+	 * is unusable on the calling thread afterwards); on a main-thread node it is
+	 * served in place. Only `request` crosses: `onNewHead` and the other controls
+	 * stay on the node. Every request served this way goes through the same
+	 * serialisation point as any other, and an error the node raises arrives with
+	 * its `code`, `message` and `data`.
+	 *
+	 * Call it once per consumer; each call serves one port. `dispose()` stops all
+	 * of them. Resolves once the port is being served.
+	 */
+	serveOn(port: MessagePort): Promise<ServedPort>;
+	/** Stop timers / release resources, and stop serving every {@link serveOn} port. */
 	dispose(): Promise<void>;
+}
+
+/** A port {@link SlimNode.serveOn} is serving. */
+export interface ServedPort {
+	/**
+	 * Stop answering on this port. Requests already in flight still get their
+	 * answer; later ones get NONE (the consumer's `providerOverPort(...).close()` is
+	 * how that side stops waiting). The port itself is not closed: it was handed
+	 * over, and closing it is its holder's call.
+	 */
+	close(): Promise<void>;
 }
 
 /**

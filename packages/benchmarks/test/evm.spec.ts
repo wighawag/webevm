@@ -90,7 +90,22 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED FIFTEEN TIMES SINCE. Most recent first:
+ * RE-PINNED SIXTEEN TIMES SINCE. Most recent first:
+ *
+ * 424.8 -> 426.2 KB raw / 128.1 -> 128.6 KB gzip, by
+ * `a-worker-node-serves-eip-1193-on-a-handed-port`: a node can SERVE its
+ * EIP-1193 `request` on a `MessagePort` it is handed (`node.serveOn(port)`), so a
+ * consumer in another worker uses it through `@eip-1193/over-port`'s
+ * `providerOverPort` with the page relaying nothing. The 1.4 KB is
+ * `@eip-1193/over-port`'s `serveProvider` (and the error serialiser it carries)
+ * plus the few lines of `serveOn` in `src/node.ts`. It is in the CORE graph, and
+ * so paid by a consumer who never serves a port, because `serveOn` is on
+ * `SlimNode` and the main-thread node must answer it too: that is what keeps
+ * `createNode()` and `createWorkerNode()` interchangeable, and the one worker
+ * proxy's `Required<SlimNode>` demands the member. A dynamic `import()` inside
+ * `serveOn` was measured as the alternative and is WORSE here (427.5 KB raw /
+ * 129.1 KB gzip, since this config does not split chunks and pays for the
+ * wrapper), so the import is static. Still zero bytes of `revm-wasm`.
  *
  * 424.7 -> 424.8 KB raw / 128.4 -> 128.1 KB gzip, by
  * `one-request-at-a-time-the-node-serialises-its-whole-public-surface`: the node
@@ -326,7 +341,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 424.8, gzipKB: 128.1};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 426.2, gzipKB: 128.6};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
