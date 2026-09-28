@@ -106,6 +106,10 @@
  *                      computeStateRoot
  *   - 'statetest'   : the GeneralStateTests post-state roots (helpers/statetest.ts)
  *                      with computeStateRoot: true, revm executing every case
+ *   - 'genesis-timestamp': the SHARED genesisTimestamp battery
+ *                      (helpers/genesis-timestamp.ts): block 0's pinned timestamp
+ *                      is what `TIMESTAMP` reads with revm executing, and the
+ *                      same chain in different seconds dumps byte-identically
  */
 import type {
 	CodeUnderTest,
@@ -130,6 +134,7 @@ import {runRevmStateHistory} from './revm-state-history.js';
 import {runRevmHistoricalCall} from './revm-historical-call.js';
 import {runRevmStateHistoryPersistence} from './revm-state-history-persistence.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
+import {runGenesisTimestampChecks} from './genesis-timestamp.js';
 import {createRevmEngine} from '../../src/revm.js';
 import {runTrieDerivedChecks} from './trie-derived.js';
 import {runStorageCollisionChecks} from './storage-collision.js';
@@ -379,11 +384,14 @@ const cut: CodeUnderTest = {
 
 		// The derived-trie battery, the collision cases and the GeneralStateTests
 		// roots, each with revm executing: trie mode used to be refused by this
-		// engine, so these are the runs that prove it is served.
+		// engine, so these are the runs that prove it is served. The
+		// genesisTimestamp battery shares the compiled engine factory: block 0's
+		// timestamp is what revm's `TIMESTAMP` must read at genesis.
 		if (
 			ctx.params.mode === 'trie-derived' ||
 			ctx.params.mode === 'storage-collision' ||
-			ctx.params.mode === 'statetest'
+			ctx.params.mode === 'statetest' ||
+			ctx.params.mode === 'genesis-timestamp'
 		) {
 			try {
 				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
@@ -392,6 +400,10 @@ const cut: CodeUnderTest = {
 					results.revmTrieDerived = await runTrieDerivedChecks({makeEngine});
 				else if (ctx.params.mode === 'storage-collision')
 					results.revmStorageCollision = await runStorageCollisionChecks({
+						makeEngine,
+					});
+				else if (ctx.params.mode === 'genesis-timestamp')
+					results.revmGenesisTimestamp = await runGenesisTimestampChecks({
 						makeEngine,
 					});
 				else

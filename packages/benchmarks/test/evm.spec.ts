@@ -107,7 +107,14 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED NINETEEN TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY TIMES SINCE. Most recent first:
+ *
+ * 442.3 -> 442.6 KB raw / 133.3 -> 133.4 KB gzip, by
+ * `a-genesis-timestamp-option`: the new `genesisTimestamp` option pins block 0's
+ * timestamp. The 0.3 KB is `validateGenesisTimestamp` in `src/node.ts` and its
+ * refusal message (which names the option, its unit and an example), plus the
+ * one-expression change to the genesis header. No import was added. In the CORE
+ * graph because genesis is built by every node.
  *
  * 441.4 -> 442.3 KB raw / 133.0 -> 133.3 KB gzip, by
  * `trie-derived-from-the-flat-state`: trie mode (now `computeStateRoot: true`)
@@ -430,7 +437,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 442.3, gzipKB: 133.3};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 442.6, gzipKB: 133.4};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

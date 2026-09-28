@@ -93,6 +93,12 @@
  *   - 'worker-rpc-errors'  : a worker-hosted node rejects with the SAME
  *                            `RpcError` (code, message, data) as a main-thread
  *                            node, and a plain `Error` still crosses as one
+ *   - 'genesis-timestamp'  : `genesisTimestamp` pins block 0's timestamp (RPC and
+ *                            `TIMESTAMP`), makes two nodes created in different
+ *                            seconds agree byte for byte, survives a dump/load,
+ *                            reaches a worker-hosted node, and refuses a bad
+ *                            value. ENGINE-PARAMETERISED (revm through
+ *                            ./cut-revm.ts)
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -128,6 +134,11 @@ import {runHistoricalCallChecks} from './historical-call.js';
 import {runStateHistoryPersistenceChecks} from './state-history-persistence.js';
 import {runStateHistoryTransportChecks} from './state-history-transports.js';
 import {runWorkerRpcErrorChecks} from './worker-rpc-errors.js';
+import {
+	runGenesisTimestampChecks,
+	runGenesisTimestampConstructionChecks,
+	runGenesisTimestampWorkerChecks,
+} from './genesis-timestamp.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -503,6 +514,22 @@ const cut: CodeUnderTest = {
 				results.errors = await runWorkerRpcErrorChecks(
 					String(ctx.params.workerUrl),
 				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// genesis-timestamp: block 0's timestamp, pinned by `genesisTimestamp`.
+		if (ctx.params.mode === 'genesis-timestamp') {
+			try {
+				results.genesisTimestamp = {
+					battery: await runGenesisTimestampChecks(),
+					construction: await runGenesisTimestampConstructionChecks(),
+					worker: await runGenesisTimestampWorkerChecks(
+						String(ctx.params.workerUrl),
+					),
+				};
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
