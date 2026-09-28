@@ -112,6 +112,7 @@ const dummySignature = (from: `0x${string}`) =>
 function makeBackend(
 	mode: SendMode,
 	engineChoice: EngineChoice = 'default',
+	computeStateRoot = false,
 ): EvmBackend {
 	let node: SlimNode;
 	let wallet: WalletClient;
@@ -161,16 +162,18 @@ function makeBackend(
 		return createRevmEngine({wasm: await compiledRevmModule()});
 	}
 
+	const baseName =
+		engineChoice === 'revm'
+			? 'webevm + revm engine (signed eth_sendRawTransactionSync, auto-mine)'
+			: {
+					recover: 'webevm (signed eth_sendRawTransactionSync, auto-mine)',
+					trusted: "webevm senderMode:'trusted' (signed, no ecrecover)",
+					fabricated:
+						"webevm senderMode:'trusted' (fabricated sig — no secp256k1 at all)",
+				}[mode];
+
 	return {
-		name:
-			engineChoice === 'revm'
-				? 'webevm + revm engine (signed eth_sendRawTransactionSync, auto-mine)'
-				: {
-						recover: 'webevm (signed eth_sendRawTransactionSync, auto-mine)',
-						trusted: "webevm senderMode:'trusted' (signed, no ecrecover)",
-						fabricated:
-							"webevm senderMode:'trusted' (fabricated sig — no secp256k1 at all)",
-					}[mode],
+		name: computeStateRoot ? `${baseName} + computeStateRoot` : baseName,
 
 		async setup() {
 			node = await createNode({
@@ -180,6 +183,9 @@ function makeBackend(
 				initialBalances: {[account.address]: 10n ** 24n},
 				// `undefined` on the default rows, so they construct exactly as before.
 				engine: await makeEngine(),
+				// Only the computeStateRoot rows pass it at all, so every other row
+				// constructs exactly as it did before those rows existed.
+				...(computeStateRoot ? {computeStateRoot: true} : {}),
 			});
 			const transport = custom(
 				{request: ({method, params}) => node.request({method, params})},
@@ -251,3 +257,18 @@ export const makeSlimNodeFabricatedBackend = () => makeBackend('fabricated');
  */
 export const makeSlimNodeRevmEngineBackend = () =>
 	makeBackend('recover', 'revm');
+/**
+ * THE `computeStateRoot: true` ROWS, one per engine. Each differs from its plain
+ * sibling (`makeSlimNodeBackend`, `makeSlimNodeRevmEngineBackend`) by exactly
+ * that one `createNode` option, so the delta between the two IS what computing a
+ * state root costs on this scenario: `coldStart` gains the trie's build from the
+ * genesis state, and each auto-mined block (one transaction, so `deploy` and
+ * `callAvg` are per-transaction AND per-block) gains the root update for the
+ * keys it changed. The read rows execute no block and should not move at all.
+ * How the root update SCALES with keys changed per block is not this scenario's
+ * question (it changes one slot per block); see ./root-update.ts.
+ */
+export const makeSlimNodeComputeStateRootBackend = () =>
+	makeBackend('recover', 'default', true);
+export const makeSlimNodeRevmEngineComputeStateRootBackend = () =>
+	makeBackend('recover', 'revm', true);

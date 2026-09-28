@@ -25,8 +25,11 @@ import {
 	makeSlimNodeTrustedBackend,
 	makeSlimNodeFabricatedBackend,
 	makeSlimNodeRevmEngineBackend,
+	makeSlimNodeComputeStateRootBackend,
+	makeSlimNodeRevmEngineComputeStateRootBackend,
 } from './backend-slim-node.js';
 import {makeRevmBackend} from './backend-revm.js';
+import {runRootUpdate, type RootUpdateEngine} from './root-update.js';
 
 const BACKENDS: Record<string, () => EvmBackend> = {
 	tevm: makeTevmBackend,
@@ -50,6 +53,12 @@ const BACKENDS: Record<string, () => EvmBackend> = {
 	// @ethereumjs/* involved, so every row is comparable and the write path is
 	// under the gas gate too; see backend-revm.ts.
 	revm: makeRevmBackend,
+	// The two rows above that a consumer switches `computeStateRoot: true` on
+	// for, each with exactly that one option added: the delta to its plain
+	// sibling is what computing a state root costs on this scenario.
+	'webevm-computestateroot': makeSlimNodeComputeStateRootBackend,
+	'webevm-revm-engine-computestateroot':
+		makeSlimNodeRevmEngineComputeStateRootBackend,
 };
 
 const cut: CodeUnderTest = {
@@ -59,6 +68,33 @@ const cut: CodeUnderTest = {
 		const errors: string[] = [];
 		const timings: Timing[] = [];
 		const results: Record<string, unknown> = {};
+
+		// A SEPARATE measurement, not a backend: what `computeStateRoot: true`
+		// adds to a block as a function of slots changed (./root-update.ts). It
+		// never touches the shared scenario, so the gas gate cannot see it.
+		if (ctx.params.scenario === 'root-update') {
+			try {
+				const outcome = await runRootUpdate({
+					engine: String(ctx.params.engine) as RootUpdateEngine,
+					sizes: (ctx.params.sizes as number[]).map(Number),
+					warmupBlocks: Number(ctx.params.warmupBlocks ?? 3),
+					measuredBlocks: Number(ctx.params.measuredBlocks ?? 9),
+				});
+				return {
+					results: {...outcome},
+					timings: [],
+					errors: [],
+					env: captureEnv(),
+				};
+			} catch (e) {
+				return {
+					results: {},
+					timings: [],
+					errors: [String((e as Error)?.stack ?? (e as Error)?.message ?? e)],
+					env: captureEnv(),
+				};
+			}
+		}
 
 		const backendKey = String(ctx.params.backend ?? 'ethereumjs-tuned');
 		const make = BACKENDS[backendKey];

@@ -42,7 +42,24 @@ const BACKENDS = [
 	// below is RAW revm owning its own state with no node in the path at all.
 	'webevm-revm-engine',
 	'revm',
+	// `computeStateRoot: true` on each engine's node row, one option added and
+	// nothing else (see backend-slim-node.ts). APPENDED, so every row above keeps
+	// its place: `ethereumjs-tuned` still pins each gas reference first and the
+	// rows above compare exactly what they compared before. These two are held to
+	// the same gas (a root is computed after execution and must not change what
+	// execution charges), which widens the gate by two rows and changes nothing it
+	// already asserted.
+	'webevm-computestateroot',
+	'webevm-revm-engine-computestateroot',
 ] as const;
+
+// What `computeStateRoot: true` adds to a block as a function of the storage
+// slots it changed (see helpers/root-update.ts). A separate measurement, not a
+// backend: it runs no part of the gated scenario. 300 is the "few hundred slots"
+// a realistic game block changes, which is the size the README's claim and the
+// task's observation threshold are about.
+const ROOT_UPDATE_SIZES = [1, 10, 100, 300, 1000];
+const rootUpdateRows: Record<string, unknown>[] = [];
 
 // The revm-wasm module ships prebuilt inside the `revm-wasm` package, so there is
 // nothing to build and nothing to vendor: this is where the served copy comes
@@ -687,6 +704,111 @@ test('bundle size per backend (raw + gzip)', async () => {
 				(ms === undefined
 					? ''
 					: `  (${((ms / FRAME_BUDGET_MS) * 100).toFixed(0)}% of the frame budget)`),
+		);
+	}
+});
+
+// THE computeStateRoot ROWS CHARGE WHAT THEIR PLAIN SIBLINGS CHARGE. Already
+// implied by the per-backend gate above; stated pairwise because this is the pair
+// a consumer switches between with one option, and a root that changed gas would
+// mean the trie had leaked into execution.
+test('computeStateRoot rows charge the same gas as their plain rows', () => {
+	for (const [plain, withRoot] of [
+		['webevm', 'webevm-computestateroot'],
+		['webevm-revm-engine', 'webevm-revm-engine-computestateroot'],
+	] as const) {
+		const a = collected.find((c) => c.backend === plain);
+		const b = collected.find((c) => c.backend === withRoot);
+		expect(b?.computeGas).toBe(a?.computeGas);
+		expect(b?.keccakGas).toBe(a?.keccakGas);
+		expect(b?.keccakResult).toBe(a?.keccakResult);
+	}
+});
+
+for (const engine of ['default', 'revm'] as const) {
+	test(`computeStateRoot root update vs slots changed per block (${engine} engine)`, async ({
+		page,
+	}) => {
+		const h = await mountHarness(page, {cut, coi: false, prebuilt});
+		const r = await h.run({
+			phase: 'once',
+			params: {
+				scenario: 'root-update',
+				engine,
+				sizes: ROOT_UPDATE_SIZES,
+				warmupBlocks: 3,
+				measuredBlocks: 9,
+			},
+		});
+		console.log(`\n[root-update ${engine}] errors:`, r.errors);
+		console.log(`[root-update ${engine}] results:`, JSON.stringify(r.results));
+		expect(r.errors).toEqual([]);
+		// The root node really computed a root, and both nodes ended in the same
+		// state: the measurement compared like with like.
+		const stateRoot = r.results.lastBlockStateRoot as string;
+		expect(stateRoot).toMatch(/^0x[0-9a-f]{64}$/);
+		expect(stateRoot).not.toBe(`0x${'0'.repeat(64)}`);
+		expect(r.results.rootLastSlot).toBe(r.results.plainLastSlot);
+		const rows = r.results.rows as Record<string, unknown>[];
+		expect(rows.map((x) => x.slots)).toEqual(ROOT_UPDATE_SIZES);
+		rootUpdateRows.push(...rows);
+		await h.dispose();
+	});
+}
+
+// THE COST OF computeStateRoot, spelled out. REPORTED, NOT ASSERTED, for the
+// same reason as the frame table: timings are load-sensitive and WebKit clamps
+// `performance.now()` to 1 ms. The README's state-root section cites these, via
+// docs/spikes/computestateroot-cost-benchmark/measurements.md.
+test('computeStateRoot cost (REPORTED, not asserted)', () => {
+	const n = (v: unknown, d = 2) =>
+		typeof v === 'number' ? v.toFixed(d) : String(v ?? '-');
+	console.log(
+		'\n=== computeStateRoot: scenario rows, plain -> with root (ms, medians) ===',
+	);
+	console.log(
+		'engine'.padEnd(10) +
+			['coldStart', 'deploy', 'callAvg', 'read', 'frame']
+				.map((k) => k.padStart(22))
+				.join(''),
+	);
+	for (const [engine, plain, withRoot] of [
+		['default', 'webevm', 'webevm-computestateroot'],
+		['revm', 'webevm-revm-engine', 'webevm-revm-engine-computestateroot'],
+	] as const) {
+		const a = collected.find((c) => c.backend === plain) ?? {};
+		const b = collected.find((c) => c.backend === withRoot) ?? {};
+		console.log(
+			engine.padEnd(10) +
+				(['coldStart', 'deploy', 'callAvg', 'read', 'frame'] as const)
+					.map((k) => `${n(a[k])} -> ${n(b[k])}`.padStart(22))
+					.join(''),
+		);
+	}
+	console.log(
+		'(callAvg is per transaction AND per block: auto-mine, one tx per block, one slot changed)',
+	);
+	console.log(
+		'\n=== computeStateRoot: root update vs slots changed per block ===',
+	);
+	console.log(
+		'engine'.padEnd(10) +
+			'slots'.padStart(7) +
+			'plain block'.padStart(14) +
+			'root block'.padStart(13) +
+			'delta'.padStart(10) +
+			'us/slot'.padStart(10) +
+			'getStateRoot med/mean'.padStart(24),
+	);
+	for (const row of rootUpdateRows) {
+		console.log(
+			String(row.engine).padEnd(10) +
+				String(row.slots).padStart(7) +
+				`${n(row.plainBlockMs)} ms`.padStart(14) +
+				`${n(row.rootBlockMs)} ms`.padStart(13) +
+				`${n(row.deltaMs)} ms`.padStart(10) +
+				n(row.deltaPerSlotUs, 1).padStart(10) +
+				`${n(row.cheatRootMs)} / ${n(row.cheatRootMeanMs)} ms`.padStart(24),
 		);
 	}
 });
