@@ -101,6 +101,12 @@ refused `stateMode`) lives in the library package, as does the differential
 conformance battery run with the engine installed, receipts and post-state
 included. This package only measures it and gates its gas.
 
+## The `computeStateRoot` rows
+
+`webevm-computestateroot` and `webevm-revm-engine-computestateroot` are the `webevm` and `webevm-revm-engine` rows with `createNode({computeStateRoot: true})` added and nothing else, so the delta to each plain sibling is what computing a state root costs on this scenario. Auto-mine puts one transaction in each block, so their `deploy` and `callAvg` are per transaction AND per block (a block that changes one slot); the read rows execute no block and should not move. They are APPENDED to the backend list, so every older row keeps its place and `ethereumjs-tuned` still pins each gas reference; they are held to the same gas as every other backend, because a root is computed after execution and must not change what execution charges.
+
+How the root update SCALES is a separate measurement, `test/helpers/root-update.ts`, run once per engine: two nodes identical but for the option mine the same blocks, each rewriting K slots (1, 10, 100, 300, 1000) of one contract, and the block delta is compared with a direct `getStateRoot()` after K pending cheat writes. It is deliberately NOT a scenario phase or a backend: the scenario is the gas gate, and teaching it a new transaction shape would mean changing every backend (the reason ADR 0010's amendment gives for measuring transaction shapes outside the suite). The last test in `evm.spec.ts` prints both tables; figures and conditions are in [`docs/spikes/computestateroot-cost-benchmark/measurements.md`](../../docs/spikes/computestateroot-cost-benchmark/measurements.md). In short: about 0.1 ms per changed slot, on both engines, and nothing per opcode.
+
 ## What it measures
 
 - **Per-phase timings** (median of repeats): cold start, deploy, state-changing
