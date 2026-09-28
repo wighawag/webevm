@@ -17,10 +17,9 @@
  * under test — which is why the suite is parameterised by engine rather than
  * asserted once on `@ethereumjs/evm` and assumed for the rest.
  *
- * WHICH STATE MODE: `'none'`, the only one this engine serves (it refuses `'trie'`
- * at construction — ADR 0005). That refusal is asserted in
- * `revm-conformance.spec.ts`, where the mode split is decided; it is not restated
- * here.
+ * WHICH STATE MODE: `'none'`, the default. (This engine used to refuse `'trie'`,
+ * ADR 0005; it serves it since ADR 0014, covered by `revm-trie-derived.spec.ts`
+ * and `revm-conformance.spec.ts`.)
  *
  * Its OWN cut (helpers/cut-revm.ts), because that bundle carries the revm `.wasm`
  * and the shared cut must keep costing the other specs nothing.

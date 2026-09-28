@@ -39,10 +39,11 @@
  * checkpoint stacks plus the node's own storage overlays (see
  * ./revm-state-store.ts, ADR 0005 for the reach-through and ADR 0010 for the
  * ownership decision), which is the only synchronous view of the node's state
- * that exists — so this engine serves `stateMode:'none'` ONLY, and refuses
- * `'trie'` at construction rather than at the first opcode. THE NODE KEEPS
- * OWNING STATE: nothing is copied into wasm, and a transaction writes back only
- * the accounts it touched and the slots that changed.
+ * that exists. EVERY node runs on that state, `stateMode:'trie'` included: the
+ * trie there is DERIVED from the flat state between blocks and no engine ever
+ * reads it (ADR 0014, which lifted this engine's former refusal of `'trie'`).
+ * THE NODE KEEPS OWNING STATE: nothing is copied into wasm, and a transaction
+ * writes back only the accounts it touched and the slots that changed.
  *
  * AND WHICH FORKS. It serves the hardforks whose transaction costing the node's
  * own arithmetic reproduces AND the PROTOCOL agrees with
@@ -238,26 +239,10 @@ export async function createRevmEngine(
 		id: REVM_ENGINE_ID,
 
 		connect(context: EngineContext): void {
-			// A MODE THIS ENGINE CANNOT SERVE, refused out loud and at construction.
-			// `MerkleStateManager` has no synchronous view of state at any depth, and
-			// revm's reads must be synchronous, so there is nothing to reach through
-			// to. A consumer who asked for revm and silently got something else would
-			// measure the wrong thing forever, so this throws out of `createNode()`
-			// rather than at the first opcode. See ADR 0005.
-			if (context.stateMode !== 'none') {
-				throw new Error(
-					`webevm/revm: the revm engine cannot serve stateMode:'${context.stateMode}'. ` +
-						`It reads the node's state SYNCHRONOUSLY through SimpleStateManager's ` +
-						`checkpoint stacks (stateMode:'none'), and MerkleStateManager has no ` +
-						`synchronous view at any depth — revm's interpreter has no suspension ` +
-						`point to await a trie read at. Use stateMode:'none' with this engine, ` +
-						`or the default @ethereumjs/evm engine with stateMode:'trie'. See ` +
-						`docs/adr/0005-revm-reads-the-nodes-state-through-simplestatemanagers-stacks.md.`,
-				);
-			}
-			// A HARDFORK THIS ENGINE CANNOT COST, refused the same way and for the same
-			// reason as the state mode above: revm would run it and charge rules the
-			// node's own arithmetic does not implement. Unreachable while the node is
+			// A HARDFORK THIS ENGINE CANNOT COST, refused out loud and at construction:
+			// revm would run it and charge rules the node's own arithmetic does not
+			// implement, and a consumer who asked for revm and silently got something
+			// else would measure the wrong thing forever. Unreachable while the node is
 			// pinned to Cancun, which is the point — it fires the day that moves,
 			// rather than letting `eth_estimateGas` return a number this engine would
 			// then reject.

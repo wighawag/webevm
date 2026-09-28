@@ -8,8 +8,8 @@
  *
  * (1) and (2) also run on `webevm/revm` (`revm-genesis-cheats.spec.ts`),
  * against the SAME literals (./genesis-cheats-expected.ts). (3) does not: it is a
- * comparison BETWEEN the state modes and needs a `'trie'` node, which that engine
- * refuses at construction.
+ * comparison BETWEEN the state modes, and engine performance belongs to
+ * `packages/benchmarks`.
  */
 import {test, expect} from '@playwright/test';
 import {fileURLToPath} from 'node:url';

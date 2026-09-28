@@ -99,6 +99,12 @@ importers:
       '@ethereumjs/evm':
         specifier: ^10.1.2
         version: 10.1.2
+      '@ethereumjs/mpt':
+        specifier: ^10.1.2
+        version: 10.1.2
+      '@ethereumjs/rlp':
+        specifier: ^10.1.2
+        version: 10.1.2
       '@ethereumjs/statemanager':
         specifier: ^10.1.2
         version: 10.1.2

@@ -191,7 +191,7 @@ method-not-found (`-32601`) — it never fakes a result.
 | `eth_getTransactionReceipt`, `eth_getTransactionByHash` | from the in-memory store |
 | `eth_getLogs` | address + topic filtering over mined logs, by `fromBlock`/`toBlock` or by `blockHash` (EIP-234; an unknown hash is `-32000`, a hash together with a range is `-32602`). An omitted `fromBlock` means block **0** here, where geth means `latest`. **Perf note:** a full linear scan over all logs per call (O(total_logs), no index/cache) — fine for a local chain |
 | `eth_subscribe`/`eth_unsubscribe` | **`newHeads` only**; prefer `onNewHead()` over comlink |
-| `evm_setBalance` / `evm_setNonce` / `evm_setCode` / `evm_setStorageAt` / `evm_setAccount` | anvil/hardhat-style runtime state cheats (mutate live state with no tx); commit into the trie in `'trie'` mode |
+| `evm_setBalance` / `evm_setNonce` / `evm_setCode` / `evm_setStorageAt` / `evm_setAccount` | anvil/hardhat-style runtime state cheats (mutate live state with no tx); in `'trie'` mode `getStateRoot()` reflects them straight away, and the next block's root includes them |
 | `evm_sendRawTransactionAs` / `evm_sendRawTransactionSyncAs` | `[raw, from]` — execute as `from`, **skipping ecrecover**. Only exist when `senderMode: 'trusted'`; otherwise a loud `-32601`. See [Sender mode](#sender-mode-recover-authenticated-default-vs-trusted-no-ecrecover) |
 
 ### Intentionally NOT supported (loud `-32601`)
@@ -284,7 +284,7 @@ This is what a client needs whose head moves between reading a block number and 
 
 Blocks, receipts and logs are **not** affected by any of this: `eth_getBlockByNumber` and `eth_getLogs` work at any height. Up to and including 0.7.0 the six state methods ignored the block parameter and answered from the head, which was silently wrong: a client that pinned `eth_getLogs` and `eth_call` to the same block got logs as of that block and storage as of a later one.
 
-**Opt-in, with no default window.** A node created without the option records nothing, pays nothing and refuses below the head. `N` must be a positive safe integer; anything else throws at construction, and so does combining it with `stateMode:'trie'` (whose state manager records nothing, until trie mode runs on the same flat state). The history **is persisted**: `dumpState` carries it and `loadState` restores it, so an [IndexedDB](#persistence-indexeddb) reload serves the same window. A dump written without history (or before this option existed) still loads, with history starting at its head; a dump holding more blocks than the loading node's N is cut to N, one holding fewer serves what it has. The option passes through `createWorkerNode` / `exposeNode` like every other, and historical reads work the same over a port handed to `node.serveOn(port)` as through `node.request`.
+**Opt-in, with no default window.** A node created without the option records nothing, pays nothing and refuses below the head. `N` must be a positive safe integer; anything else throws at construction. It works in both state modes: `stateMode:'trie'` runs on the same flat state the history records. The history **is persisted**: `dumpState` carries it and `loadState` restores it, so an [IndexedDB](#persistence-indexeddb) reload serves the same window. A dump written without history (or before this option existed) still loads, with history starting at its head; a dump holding more blocks than the loading node's N is cut to N, one holding fewer serves what it has. The option passes through `createWorkerNode` / `exposeNode` like every other, and historical reads work the same over a port handed to `node.serveOn(port)` as through `node.request`.
 
 **How it works:** an undo log over the node's one state, not copies of it. While block j is built, the node records, for each account, code entry and storage slot the block changes, the value it had at the end of block j - 1; the records of the last N blocks are kept and older ones evicted as each block is mined. A point read at K takes the first record for its key after K, or the live value. A historical `eth_call` applies every key changed since K as a state override inside the call's own reverted checkpoint. The reasoning, and the alternatives rejected (per-block snapshots, retained tries, diffing), is [ADR 0013](docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md); the gate every state method goes through is `historicalBlock` in `src/node.ts`.
 
@@ -303,49 +303,54 @@ Measured, not estimated: [`docs/spikes/bounded-state-history-cost/results.md`](d
 ## State mode: `'none'` (fast, default) vs `'trie'` (real state root, opt-in)
 
 ```ts
-const fast = await createNode({stateMode: 'none'});       // default — SimpleStateManager
-const conformant = await createNode({stateMode: 'trie'});  // MerkleStateManager
+const fast = await createNode({stateMode: 'none'});       // default: no state root
+const conformant = await createNode({stateMode: 'trie'});  // + a real state root
 ```
 
-- **`'none'`** (default): `SimpleStateManager`, no trie, no state root. The fast
-  path; measured only **~1.4× faster per signed call / ~1.35× on deploy** than trie
-  for typical workloads (so the cost of turning the root on is small). Block
+**Every node runs on ONE state**: our `SimpleStateManager` subclass, plain Maps
+with no trie. `'trie'` does not change that state or how anything executes; it
+ADDITIONALLY keeps a Merkle-Patricia trie **derived** from it, updated at the end
+of each block from the keys that block changed, and reports the trie's root
+([ADR 0014](docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md)).
+
+- **`'none'`** (default): no trie and no trie work at all. Block
   `stateRoot`/`receiptsRoot`/`transactionsRoot` are zero placeholders and
-  `node.getStateRoot()` throws (there is no root). **Full-storage
-  persistence is a `'none'`-mode feature.**
-- **`'trie'`** (opt-in): `MerkleStateManager` — a real Merkle-Patricia trie.
-  `node.getStateRoot()` returns the **real** root and block headers carry it. This
-  is what lets the node be **conformance-tested against `ethereum/tests`
-  GeneralStateTests** (they verify exactly that post-state root). Bundle cost ~0
-  (the trie code is already pulled in transitively by `@ethereumjs/vm`).
-  Caveat: trie-mode `dumpState` carries accounts + code but **not** contract
-  storage — use `'none'` for IndexedDB persistence, `'trie'` for the state root /
-  conformance.
+  `node.getStateRoot()` throws (there is no root).
+- **`'trie'`** (opt-in): `node.getStateRoot()` returns the **real** root (including
+  `evm_set*` cheats made since the last block) and every block header carries the
+  root of its post-state. This is what lets the node be **conformance-tested
+  against `ethereum/tests` GeneralStateTests** (they verify exactly that post-state
+  root). Execution never touches the trie, so what it costs is a root update per
+  block proportional to what the block changed, and it works with **both
+  engines**, the [revm engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)
+  included. Everything else is the same as `'none'`: `dumpState` carries the full
+  state, storage included (the trie is not serialised; `loadState` rebuilds it, so
+  a reloaded chain reports the same roots), and
+  [`stateHistory`](#state-reads-at-past-blocks-statehistory) works in it.
 
-One behaviour genuinely differs between the modes, when a contract is created at
-an address that **already holds storage** (reachable via `evm_setStorageAt`, a
-`loadState`, or a re-deploy after `SELFDESTRUCT`):
+**Switching modes cannot change what a contract does.** One case is worth
+spelling out, because Ethereum itself changed its answer: a contract CREATED at an
+address that has no nonce and no code but **already holds storage** (reachable via
+`evm_setStorageAt`, `evm_setAccount`, `initialState` or a `loadState`). Every node,
+in both modes and on both engines, follows the reference spec (EIP-684 plus the
+Yellow Paper, as execution-specs now specifies it): that is **not** a collision,
+so the creation **succeeds** and the old storage is **wiped**, and the new contract
+starts empty. A nonce or code at the target is still a collision, refused
+everywhere. EIP-7610 (a collision on storage too) is not what this node does: it
+never became final, the reference spec went the other way, and the storage-only
+shape is being retired on mainnet by bumping those accounts' nonces instead. The
+evidence is in
+[`work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`](work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md).
+(`'trie'` used to refuse that creation, because it ran on `MerkleStateManager`,
+whose real `storageRoot` fed the EIP-7610 check; that asymmetry is gone.)
 
-- **`'none'`** clears that storage and the creation **succeeds**, so the new
-  contract starts empty. This is the pre-EIP-7610 behaviour, and it is what the
-  EVM itself asks for on every create.
-- **`'trie'`** has a real `storageRoot`, so the EIP-7610 collision check fires and
-  the creation **fails** with a revert. This is the spec-current behaviour.
-
-A DELETED account, by contrast, behaves the SAME in both modes: a `SELFDESTRUCT`
-(or an EIP-161 empty-account clearing) takes the account's storage with it, so a
-destroyed contract's slots read `0` and `dumpState` stops carrying them. That is
-free in `'trie'` (the account's storage trie goes with the account) and is our
-override in `'none'`, where upstream `SimpleStateManager.deleteAccount` leaves
-storage where it was — the same gap as the `clearStorage` no-op below, and
-recorded in the same ADR.
-
-Neither mode lets the new contract *inherit* the old storage, which is the part
-that would silently corrupt results. `'none'` cannot detect the collision at all,
-because detecting it means reading a `storageRoot` that mode does not have. Note
-that `@ethereumjs/statemanager@10.1.2` does not clear it either — its
-`SimpleStateManager.clearStorage` is an empty no-op, so we override it and a fresh
-contract does read `0`
+A DELETED account likewise behaves the same everywhere: a `SELFDESTRUCT` (or an
+EIP-161 empty-account clearing) takes the account's storage with it, so a
+destroyed contract's slots read `0` and `dumpState` stops carrying them. Neither
+case lets a new contract *inherit* old storage, which is the part that would
+silently corrupt results. Note that `@ethereumjs/statemanager@10.1.2` clears
+nothing on either path: its `SimpleStateManager.clearStorage` is an empty no-op
+and its `deleteAccount` leaves storage where it was, so we override both
 ([ADR 0007](docs/adr/0007-we-override-simplestatemanagers-no-op-clearstorage.md)).
 
 ## Sender mode: `'recover'` (authenticated, default) vs `'trusted'` (no ecrecover)
@@ -551,12 +556,15 @@ geth (`ErrInsufficientBalance`). A read never invents funds it can then report.
 
 Caveats, all of them real:
 
-- **`stateMode:'none'` only.** revm reads the node's state SYNCHRONOUSLY (an
+- **Both state modes.** revm reads the node's state SYNCHRONOUSLY (an
   interpreter has no suspension point mid-opcode) through `SimpleStateManager`'s
-  checkpoint stacks, and `MerkleStateManager` has no synchronous view at any
-  depth ([ADR 0005](docs/adr/0005-revm-reads-the-nodes-state-through-simplestatemanagers-stacks.md)).
-  `createNode({stateMode:'trie', engine: revm})` **throws at construction**,
-  naming the reason.
+  checkpoint stacks
+  ([ADR 0005](docs/adr/0005-revm-reads-the-nodes-state-through-simplestatemanagers-stacks.md)),
+  and every node runs on that state: in `stateMode:'trie'` the trie is derived
+  from it after each block and never read during execution
+  ([ADR 0014](docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md)),
+  so `createNode({stateMode:'trie', engine: revm})` gives the fast engine and a
+  real state root together. (It used to throw at construction.)
 - **Only the hardforks it can COST.** The engine serves `berlin`, `london`,
   `paris`, `shanghai` and `cancun` (the node runs Cancun) and refuses `prague`
   and `osaka` at construction, naming the EIP: revm enforces EIP-7623's calldata
@@ -678,7 +686,8 @@ including the [`stateHistory`](#state-reads-at-past-blocks-statehistory) window.
 post-state **Merkle-Patricia trie root** (`hash`) + a `keccak(RLP(logs))` hash. The
 default `stateMode:'none'` has no trie/root by design, so it can't consume those
 fixtures — but the opt-in `stateMode:'trie'` **can**, and the test suite does
-exactly that (see `test/statetest.spec.ts`, 5/5 vendored cases pass). `VMTests`
+exactly that (see `test/statetest.spec.ts`, 5/5 vendored cases pass, and
+`test/revm-statetest.spec.ts`, the same cases with the revm engine executing). `VMTests`
 (the one trie-free format) is frozen at Homestead and useless for a Cancun node.
 Beyond that, the test suite also runs a **differential** conformance check
 (`test/conformance.spec.ts`): a battery of signed txs through BOTH the node and a
@@ -714,10 +723,9 @@ Listing an entry a transaction touches is **100 gas cheaper** (charged 2,400 or
 **+6,200 exactly**, and a dropped list is 0.
 
 That same battery runs once more with the optional revm engine installed
-(`test/revm-conformance.spec.ts`), in the one state mode that engine serves
-(`'none'` — it refuses `'trie'` at construction), so the alternative EVM faces
-the repo's strongest correctness bar rather than a softer one of its own. Nothing
-is relaxed for it: `test/conformance.spec.ts` still runs both modes on the
+(`test/revm-conformance.spec.ts`), in both state modes, so the alternative EVM
+faces the repo's strongest correctness bar rather than a softer one of its own.
+Nothing is relaxed for it: `test/conformance.spec.ts` still runs both modes on the
 default engine, unchanged.
 
 The node's own state-owning features are held to that same bar rather than

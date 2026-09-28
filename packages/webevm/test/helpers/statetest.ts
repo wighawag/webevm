@@ -22,6 +22,7 @@ import {hexToBytes, bytesToHex, type PrefixedHexString} from '@ethereumjs/util';
 import {keccak_256} from '@noble/hashes/sha3.js';
 import {createNode} from '../../src/index.js';
 import type {GenesisAccount, BlockEnv} from '../../src/index.js';
+import type {EngineFactory} from './conformance.js';
 
 const FORK = 'Cancun';
 
@@ -123,6 +124,8 @@ export interface CaseResult {
 	gotLogs: string;
 	wantLogs: string;
 	txStatus: string | null;
+	/** The engine the case's node ran on (`node.engine.id`). */
+	engine: string;
 	error?: string;
 }
 
@@ -130,6 +133,7 @@ export interface CaseResult {
 export async function runStateTestFixture(
 	name: string,
 	fixture: Record<string, StateTest>,
+	makeEngine?: EngineFactory,
 ): Promise<CaseResult[]> {
 	const results: CaseResult[] = [];
 	for (const [testName, test] of Object.entries(fixture)) {
@@ -152,6 +156,7 @@ export async function runStateTestFixture(
 				gotLogs: '',
 				wantLogs: c.logs,
 				txStatus: null,
+				engine: '',
 			};
 			// Fresh node per case (each starts from the same `pre`).
 			const node = await createNode({
@@ -160,7 +165,12 @@ export async function runStateTestFixture(
 				miningConfig: {type: 'auto'},
 				initialState,
 				blockEnv,
+				// One engine per node (an engine binds to exactly one): with revm
+				// installed the same roots must come out, since the trie is derived
+				// from the flat state whichever engine wrote it.
+				engine: makeEngine ? await makeEngine() : undefined,
 			});
+			r.engine = node.engine.id;
 			try {
 				const rcpt = (await node.request({
 					method: 'eth_sendRawTransactionSync',
@@ -185,7 +195,10 @@ export async function runStateTestFixture(
 /** Run a batch of named fixtures, returning a flat case-result list + a summary. */
 export async function runStateTests(
 	fixtures: {name: string; json: Record<string, StateTest>}[],
+	makeEngine?: EngineFactory,
 ): Promise<{
+	/** Every engine a case ran on: exactly one, the one under test. */
+	engines: string[];
 	cases: CaseResult[];
 	total: number;
 	passed: number;
@@ -193,10 +206,17 @@ export async function runStateTests(
 }> {
 	const cases: CaseResult[] = [];
 	for (const f of fixtures) {
-		cases.push(...(await runStateTestFixture(f.name, f.json)));
+		cases.push(...(await runStateTestFixture(f.name, f.json, makeEngine)));
 	}
+
 	const passed = cases.filter(
 		(c) => c.rootMatch && c.logsMatch && !c.error,
 	).length;
-	return {cases, total: cases.length, passed, failed: cases.length - passed};
+	return {
+		engines: [...new Set(cases.map((c) => c.engine))],
+		cases,
+		total: cases.length,
+		passed,
+		failed: cases.length - passed,
+	};
 }

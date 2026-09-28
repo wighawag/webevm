@@ -139,15 +139,18 @@ test('node honesty + correctness (receipts, gaps, persistence, state-root mode)'
 	for (const mode of ['none', 'trie'] as const) {
 		expect(BigInt(c[`seededSlot0.${mode}`])).toBe(99n);
 	}
-	// 'none': no storageRoot, so EIP-7610 cannot fire; creation proceeds and the
-	// storage is CLEARED.
-	expect(c['deployStatus.none']).toBe('success');
-	expect(c['deployLandedOnTarget.none']).toBe(true);
-	expect(c['numberAfterRedeploy.none']).toBe('0');
-	// 'trie': a real storageRoot, so the collision guard REJECTS the creation. The
-	// mode difference is deliberate and asserted so it cannot drift unnoticed.
-	expect(c['deployStatus.trie']).not.toBe('success');
-	expect(c['numberAfterRedeploy.trie']).toBe('n/a');
+	// BOTH MODES follow the reference spec (EIP-684, not EIP-7610): a storage-only
+	// target is not a collision, so creation proceeds and the storage is CLEARED.
+	// 'trie' used to REJECT it (MerkleStateManager's real storageRoot); it now runs
+	// on the same flat state as 'none' (ADR 0014), so the modes agree. The nonce
+	// and code collisions are still refused everywhere, in both modes and on both
+	// engines: the nonce* and code* cases of helpers/storage-collision.ts, asserted
+	// by trie-derived.spec.ts and revm-trie-derived.spec.ts.
+	for (const mode of ['none', 'trie'] as const) {
+		expect(c[`deployStatus.${mode}`], mode).toBe('success');
+		expect(c[`deployLandedOnTarget.${mode}`], mode).toBe(true);
+		expect(c[`numberAfterRedeploy.${mode}`], mode).toBe('0');
+	}
 
 	// (8) a DESTROYED account takes its storage with it, in BOTH modes. Upstream
 	// `SimpleStateManager.deleteAccount` tombstones the account and leaves storage

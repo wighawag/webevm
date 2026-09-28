@@ -34,8 +34,9 @@ test('point reads at any block in the stateHistory window answer as that block d
 	expect(c.battery.differential.engineId).toBe('@ethereumjs/evm');
 	assertStateHistory(c.battery, '@ethereumjs/evm');
 
-	// Construction: absent is off, {blocks: N} is on, anything else throws, and
-	// so does combining it with stateMode:'trie'.
+	// Construction: absent is off, {blocks: N} is on, anything else throws.
+	// Combining it with stateMode:'trie' is ACCEPTED: trie mode runs on the same
+	// flat state the undo log records (`trie-derived-from-the-flat-state`).
 	const k = c.construction;
 	expect(k.absent).toBe('accepted');
 	expect(k.one).toBe('accepted');
@@ -45,8 +46,7 @@ test('point reads at any block in the stateHistory window answer as that block d
 		expect(message, name).toContain('stateHistory');
 		expect(message, name).toContain('positive safe integer');
 	}
-	expect(k.trie).toContain('stateHistory');
-	expect(k.trie).toContain("stateMode:'trie'");
+	expect(k.trie).toBe('accepted');
 
 	await h.dispose();
 });

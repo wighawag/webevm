@@ -11,10 +11,9 @@
  * The suite's claimed-sender section is the assertion that can tell the difference,
  * because it signs with one account and claims another.
  *
- * WHICH STATE MODE: the only one this engine serves. It refuses `stateMode:'trie'`
- * at construction (ADR 0005), and the suite runs in the default `'none'` — the same
- * split ./revm-conformance.ts records, and it is re-asserted there rather than a
- * second time here.
+ * WHICH STATE MODE: the default `'none'`. (This engine used to refuse
+ * `stateMode:'trie'`, ADR 0005; it serves it since ADR 0014, and trie mode on
+ * revm is covered by `revm-trie-derived.spec.ts` and `revm-conformance.spec.ts`.)
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them: the suite builds two nodes
  * (a `'recover'` one and a `'trusted'` one) and an engine instance binds to exactly

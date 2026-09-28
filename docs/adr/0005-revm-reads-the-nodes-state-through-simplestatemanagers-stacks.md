@@ -20,6 +20,8 @@ A read after a mid-call WRITE is a non-issue by construction: `Revm#call` cannot
 
 ## `stateMode:'trie'` is a no, and the reason is short
 
+> **SUPERSEDED 2026-09-28 by [ADR 0014](0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md).** Trie mode no longer runs on `MerkleStateManager`: every node runs on the flat `OverlayStorageStateManager` this ADR's reach-through reads, and a trie-mode node additionally DERIVES a trie from it between blocks, which no engine reads. So the premise of this section (a trie-mode node's state is only reachable asynchronously) is gone, revm serves `stateMode:'trie'`, and the construction-time refusal was removed from `src/revm.ts`. The reasoning below stands as the reason `MerkleStateManager` could never have been served, and it is why the trie was moved out of the state manager rather than made synchronous. The reach-through itself (the rest of this ADR) is unchanged and now serves every node.
+
 `MerkleStateManager.getAccount` does `await this._trie.get(address.bytes)` against `@ethereumjs/mpt`; storage and code are the same shape. Its optional `caches` are (a) not configured by `node.ts`, and (b) would not help anyway, because a miss falls through to the async trie and there is no synchronous "is it cached" answer the EVM could take. There is no top-of-stack equivalent, no synchronous read at any depth, and nothing to reach through to. So `createNode({stateMode:'trie', engine: revmEngine})` must throw AT CONSTRUCTION naming the reason, rather than constructing and failing at the first opcode.
 
 ## What it costs

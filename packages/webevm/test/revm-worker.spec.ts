@@ -99,16 +99,13 @@ test('revm in a Worker: the README recipe, executed', async ({page}) => {
 	expect(c.engineId).toBe('revm-wasm');
 	expect(c.stateMode).toBe('none');
 	expect(c.senderMode).toBe('recover');
-	// ...and the constraint travelled unchanged: revm serves `stateMode:'none'`
-	// only and refuses anything else at `createNode()`, which here happens INSIDE
-	// the Worker, and the reason still reaches the caller of `createWorkerNode()`
-	// instead of arriving as an opaque worker failure. This is also the one
-	// reading here that ONLY a revm-backed node can produce: a node that had
-	// quietly fallen back to `@ethereumjs/evm` would have built the trie node
-	// without complaint.
-	expect(c.trieRefusal).not.toBe('DID_NOT_THROW');
-	expect(c.trieRefusal).toContain('trie');
-	expect(c.trieRefusal).toMatch(/revm/i);
+	// ...and a trie-mode node built INSIDE the Worker is revm too, with a real
+	// root crossing the boundary (revm used to refuse trie mode; the trie is now
+	// derived from the flat state, ADR 0014).
+	expect(c.trieServed.engineId).toBe('revm-wasm');
+	expect(c.trieServed.stateMode).toBe('trie');
+	expect(c.trieServed.root).toMatch(/^0x[0-9a-f]{64}$/);
+	expect(BigInt(c.trieServed.root)).not.toBe(0n);
 
 	// ---- IT RAN: the reference gas, measured THROUGH the Worker ----
 	// An engine id is what the node was built with; these are what it computed.

@@ -20,11 +20,10 @@
  * {@link runGenesisCheatsOnEngine} runs those two halves on an injected engine
  * rather than duplicating them for it.
  *
- * (3) IS NOT ENGINE-PARAMETERISED, and that is a property of what it measures
- * rather than an omission: it is a comparison BETWEEN THE TWO STATE MODES, so it
- * needs a node in `stateMode:'trie'` — which `webevm/revm` refuses at
- * construction (ADR 0005). Engine performance is measured in `packages/benchmarks`,
- * which is where this repo keeps numbers it looks at.
+ * (3) IS NOT ENGINE-PARAMETERISED: it is a comparison BETWEEN THE TWO STATE
+ * MODES on the default engine (`webevm/revm` used to refuse `stateMode:'trie'`,
+ * ADR 0005, and serves it since ADR 0014). Engine performance is measured in
+ * `packages/benchmarks`, which is where this repo keeps numbers it looks at.
  */
 import {
 	createWalletClient,
@@ -341,26 +340,22 @@ export async function runGenesisCheatsPerf(): Promise<GenesisCheatsPerfReport> {
 }
 
 export interface GenesisCheatsOnEngineReport {
-	/** The one mode this engine serves — both halves ran here. */
+	/** The state mode both halves ran in. */
 	servedMode: StateMode;
 	customGenesis: CustomGenesisReadings;
 	cheats: CheatReadings;
 }
 
 /**
- * (1) and (2) with an injected engine, in the one state mode that engine serves.
+ * (1) and (2) with an injected engine, in the state mode `serves` names.
  *
- * Deliberately NOT "run every mode on every engine", following
- * `runConformanceOnEngine`: an engine that cannot serve a mode says so at
- * construction, and covering it anyway would mean either relaxing an assertion or
- * running the mode on the default engine while claiming the engine was under test.
- * The unparameterised {@link runGenesisCheatsPerf} keeps covering BOTH modes on the
- * default engine, so no mode loses coverage — and the refusal itself is asserted in
- * `revm-conformance.spec.ts`, where the mode split is decided.
+ * The unparameterised {@link runGenesisCheatsPerf} keeps covering BOTH modes on
+ * the default engine. (It was written when `webevm/revm` refused `'trie'`; it
+ * serves both since ADR 0014, and trie mode on revm is covered by
+ * `revm-trie-derived.spec.ts`.)
  *
- * (3), the trie-vs-none perf comparison, is absent by construction: it needs a
- * `stateMode:'trie'` node, which is the configuration an engine like this one
- * refuses.
+ * (3), the trie-vs-none perf comparison, is not repeated per engine: engine
+ * performance belongs to `packages/benchmarks`.
  */
 export async function runGenesisCheatsOnEngine(opts: {
 	makeEngine: EngineFactory;

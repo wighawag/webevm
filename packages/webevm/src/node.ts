@@ -4,7 +4,10 @@
  * Design: sits BETWEEN bare `EVM.runCall` (no blocks/receipts/logs) and a full
  * node (heavy). Runs on `@ethereumjs/vm` through the engine seam (see ./engine.ts)
  * + a minimal mock blockchain with `SimpleStateManager` (plain Maps, NO trie, NO
- * state-root) and NONE of the node / RPC / mempool / signing bloat.
+ * state-root) and NONE of the node / RPC / mempool / signing bloat. Every node
+ * runs on that one flat state; a node in `stateMode:'trie'` additionally DERIVES
+ * a Merkle-Patricia trie from it at the end of each block (./derived-trie.ts,
+ * `docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md`).
  *
  * It is EXECUTION-ONLY:
  *   - NO account methods (eth_sendTransaction, eth_accounts, eth_sign,
@@ -34,7 +37,7 @@
  * `docs/adr/0012-one-request-at-a-time-the-node-serialises-its-whole-public-surface.md`.
  */
 import {createVM, type VM} from '@ethereumjs/vm';
-import {MerkleStateManager} from '@ethereumjs/statemanager';
+import {DerivedStateTrie} from './derived-trie.js';
 import {
 	OverlayStorageStateManager,
 	copyAccount,
@@ -422,10 +425,9 @@ export interface NodeInternals {
 	 * Record the per-block CHANGE SET (the open record of prior values; see the
 	 * header of ./state-manager.ts). Off by default, and a node with it off
 	 * records nothing and pays nothing. `stateHistory` turns it on (and RETAINS
-	 * the records); `trie-mode-derives-its-root-from-the-flat-state`
-	 * (`computeStateRoot`) will too. This flag turns on recording alone, for the
-	 * tests, through {@link createNodeWithInternals}. `'none'` state mode only:
-	 * the change set lives in `OverlayStorageStateManager`.
+	 * the records); `stateMode:'trie'` does too (the change set is the list of
+	 * keys the derived trie rehashes, ./derived-trie.ts). This flag turns on
+	 * recording alone, for the tests, through {@link createNodeWithInternals}.
 	 */
 	recordChangeSets?: boolean;
 }
@@ -470,18 +472,14 @@ export function changeSetsForTests(node: SlimNode): ChangeSetProbe {
 /**
  * Validate {@link NodeOptions.stateHistory}: ABSENT (`undefined`) is off and
  * returns `undefined`; `{blocks: N}` with N a positive safe integer returns N;
- * anything else throws, as does combining it with `stateMode:'trie'`.
+ * anything else throws.
  *
- * WHY TRIE MODE IS REFUSED rather than served or ignored: the history is an undo
- * log kept by `OverlayStorageStateManager`, the `'none'` mode's flat state, and
- * `'trie'` runs on `MerkleStateManager`, which records nothing. Accepting the
- * option there would silently serve nothing. The refusal lifts when trie mode
- * derives its root from the flat state (`trie-derived-from-the-flat-state`).
+ * It composes with `stateMode:'trie'`: every node runs on the same flat state,
+ * which is what the undo log records, and the derived trie only reads it. (It
+ * was refused there while trie mode ran on `MerkleStateManager`, which recorded
+ * nothing; `trie-derived-from-the-flat-state` lifted that.)
  */
-function validateStateHistory(
-	options: NodeOptions,
-	stateMode: string,
-): number | undefined {
+function validateStateHistory(options: NodeOptions): number | undefined {
 	if (options.stateHistory === undefined) return undefined;
 	const value = options.stateHistory as unknown;
 	const blocks =
@@ -497,13 +495,6 @@ function validateStateHistory(
 			`webevm: stateHistory must be {blocks: N} with N a positive safe integer ` +
 				`(how many blocks below the head stay readable), or absent for no history; ` +
 				`got ${describeOption(value)}.`,
-		);
-	if (stateMode === 'trie')
-		throw new Error(
-			"webevm: stateHistory is not available with stateMode:'trie'. The history is " +
-				"an undo log over the 'none' mode's flat state, and trie mode does not run " +
-				'on that state yet, so it would record nothing. Use the default ' +
-				"stateMode:'none' for history.",
 		);
 	return blocks;
 }
@@ -535,7 +526,9 @@ export async function createNodeWithInternals(
 	const maxPriorityFeePerGas = options.maxPriorityFeePerGas ?? 1_000_000_000n;
 	const blockGasLimit = options.blockGasLimit ?? 30_000_000n;
 	// Validated before anything is built, so a bad option costs nothing.
-	const stateHistoryBlocks = validateStateHistory(options, stateMode);
+	const stateHistoryBlocks = validateStateHistory(options);
+	/** `stateMode:'trie'`: derive a trie from the flat state, report its root. */
+	const computesStateRoot = stateMode === 'trie';
 
 	const common = new Common({
 		chain: {...Mainnet, chainId, name: 'webevm'},
@@ -543,17 +536,15 @@ export async function createNodeWithInternals(
 		customCrypto: {keccak256: (m: Uint8Array) => keccak_256(m)},
 	});
 
-	// State backing: SimpleStateManager (no trie, fast — default) or
-	// MerkleStateManager (real trie + state root — opt-in, slower, conformance-able).
-	// The 'none' manager is our SUBCLASS: storage is per-account with per-checkpoint
-	// OVERLAYS (upstream copies the whole flat storage map on every message frame),
-	// and it implements the `clearStorage(address)` that upstream ships as an empty
-	// no-op — without which a contract created at an address that already holds
-	// storage inherits it. See ./state-manager.ts.
-	const sm =
-		stateMode === 'trie'
-			? new MerkleStateManager()
-			: new OverlayStorageStateManager();
+	// State backing, ONE for every node: our `SimpleStateManager` SUBCLASS, plain
+	// Maps with no trie. Storage is per-account with per-checkpoint OVERLAYS
+	// (upstream copies the whole flat storage map on every message frame), and it
+	// implements the `clearStorage(address)` that upstream ships as an empty no-op,
+	// without which a contract created at an address that already holds storage
+	// inherits it. See ./state-manager.ts. `stateMode:'trie'` does NOT change it:
+	// it adds a trie DERIVED from this state (`derivedTrie` below), which no engine
+	// ever reads.
+	const sm = new OverlayStorageStateManager();
 
 	// THE CHANGE SET, switched on BEFORE the first write so that the construction
 	// baselines below really go through the recorder and really get cleared when
@@ -561,12 +552,11 @@ export async function createNodeWithInternals(
 	// state at genesis). `changeSets` is the manager when recording, else
 	// `undefined`, so every use below is one optional call.
 	let changeSets: OverlayStorageStateManager | undefined;
-	if (internals.recordChangeSets || stateHistoryBlocks !== undefined) {
-		if (!(sm instanceof OverlayStorageStateManager))
-			throw new Error(
-				"webevm: change sets are recorded in stateMode:'none' only; the trie " +
-					'state manager has no per-block record.',
-			);
+	if (
+		internals.recordChangeSets ||
+		stateHistoryBlocks !== undefined ||
+		computesStateRoot
+	) {
 		sm.enableChangeSets();
 		changeSets = sm;
 	}
@@ -714,30 +704,36 @@ export async function createNodeWithInternals(
 		return run;
 	}
 
-	// Touched-account set for the trie-mode dump (storage is read back via the
-	// trie's own dumpStorage). We record the addresses each tx touches at the NODE
-	// level (sender / to / created) rather than monkeypatching the state manager —
-	// MerkleStateManager's cache/flush path is sensitive to method wrapping.
-	const touchedAccounts = new Set<string>();
+	/**
+	 * THE DERIVED TRIE (`stateMode:'trie'` only; `undefined`, and never created,
+	 * otherwise). Built from the WHOLE flat state once the genesis baselines are
+	 * written and again at the end of `loadState`, and kept current from change
+	 * sets by {@link currentStateRoot}. See ./derived-trie.ts.
+	 */
+	let derivedTrie: DerivedStateTrie | undefined;
 
 	const ZERO_ROOT = ZERO_HASH;
+	/**
+	 * The state root of the flat state AS IT STANDS: the derived trie brought up
+	 * to date with the OPEN RECORD (every key written since the head was mined)
+	 * and its root read. Called at the end of each mined block, BEFORE the block's
+	 * record is taken (so the block's own writes are in it), and by
+	 * `getStateRoot()` for cheats since the head. Applying the open record twice
+	 * (a `getStateRoot()`, then the block that includes the same writes) is
+	 * harmless: the record only NAMES keys, and their values are re-read from the
+	 * flat state each time. Both callers run inside the serialisation point with
+	 * no checkpoint open, which the trie insists on. `'none'`: the zero
+	 * placeholder, and no trie work at all.
+	 */
 	async function currentStateRoot(): Promise<string> {
-		if (stateMode !== 'trie') return ZERO_ROOT;
-		const msm = sm as MerkleStateManager;
-		await msm.flush(); // write cached trie nodes before reading the root
-		return hex(await msm.getStateRoot());
-	}
-
-	// Flush cache into the trie after a direct state mutation (trie mode only) so
-	// the next getStateRoot() reflects it. No-op in 'none' mode (the Map IS state).
-	async function commitIfTrie(): Promise<void> {
-		if (stateMode !== 'trie') return;
-		await sm.checkpoint();
-		await sm.commit();
+		if (derivedTrie === undefined) return ZERO_ROOT;
+		const open = sm.peekChangeSet();
+		if (open !== undefined) await derivedTrie.apply(open);
+		return hex(derivedTrie.root());
 	}
 
 	// Read-modify-write an account (creating an empty one if absent), used by the
-	// evm_set* cheat methods. Commits into the trie in trie mode.
+	// evm_set* cheat methods.
 	async function mutateAccount(
 		addr: ReturnType<typeof createAddressFromString>,
 		fn: (acc: Account) => void,
@@ -745,8 +741,6 @@ export async function createNodeWithInternals(
 		const acc = (await sm.getAccount(addr)) ?? new Account();
 		fn(acc);
 		await sm.putAccount(addr, acc);
-		touchedAccounts.add(addr.toString());
-		await commitIfTrie();
 	}
 
 	// Minimal mock blockchain: `runTx` (inside the default engine) only needs
@@ -826,7 +820,6 @@ export async function createNodeWithInternals(
 	if (options.initialBalances) {
 		for (const [addr, bal] of Object.entries(options.initialBalances)) {
 			await sm.putAccount(createAddressFromString(addr), new Account(0n, bal));
-			touchedAccounts.add(createAddressFromString(addr).toString());
 		}
 	}
 	// Full genesis pre-state (balance/nonce/code/storage) — e.g. a GeneralStateTest
@@ -848,14 +841,13 @@ export async function createNodeWithInternals(
 					hexToBytes(val),
 				);
 			}
-			touchedAccounts.add(address.toString());
-		}
-		// Commit the cache into the trie so the genesis root is correct in trie mode.
-		if (stateMode === 'trie') {
-			await sm.checkpoint();
-			await sm.commit();
 		}
 	}
+	// THE TRIE IS BUILT FROM THE FULL FLAT STATE, here, once: the baselines above
+	// are block 0 and deliberately in NO change set (the record is cleared just
+	// after genesis is stored), so a trie kept from change sets alone would omit
+	// them and every genesis-dependent root would be wrong.
+	if (computesStateRoot) derivedTrie = await DerivedStateTrie.build(sm, common);
 
 	const blockEnv = options.blockEnv;
 
@@ -1045,13 +1037,6 @@ export async function createNodeWithInternals(
 			const from = sender.toString();
 			const to = (tx as any).to ? (tx as any).to.toString() : null;
 			const created = res.createdAddress ? hex(res.createdAddress) : null;
-			// Track touched accounts for the trie-mode dump (sender, recipient, created,
-			// and any account that emitted a log — that set covers what changed).
-			touchedAccounts.add(from);
-			if (to) touchedAccounts.add(to);
-			if (created) touchedAccounts.add(created);
-			for (const log of res.logs) touchedAccounts.add(hex(log.address));
-
 			const rcptLogs: SerializedLog[] = res.logs.map((log, i) => {
 				const sl: SerializedLog = {
 					address: hex(log.address),
@@ -1117,6 +1102,8 @@ export async function createNodeWithInternals(
 		}
 
 		allLogs.push(...blockLogs);
+		// The root BEFORE the record is taken below: `currentStateRoot` applies the
+		// open record, which at this point is exactly what this block changed.
 		storeBlock(block, txHashes, blockLogs, await currentStateRoot());
 		// THE BLOCK'S CHANGE SET is everything written since the previous head was
 		// mined: this block's transactions AND any `evm_set*` cheat issued between
@@ -2110,9 +2097,10 @@ export async function createNodeWithInternals(
 	 * one does, and revm reads the top of the stack on every access and never
 	 * commits. So the stack is `[base, entries, (call)]` and unwinds in order,
 	 * whether the read returns, reverts or throws (the `finally`). It is also the
-	 * same mechanism `evmCall` already relies on for purity, one level lower. In
-	 * `'trie'` mode `MerkleStateManager.revert()` reverts the account trie and
-	 * drops its storage-trie cache, so a replaced storage does not leak.
+	 * same mechanism `evmCall` already relies on for purity, one level lower. The
+	 * derived trie of `'trie'` mode is never involved: change-set recording is
+	 * suspended for the read and the level is reverted, so nothing it wrote is
+	 * ever named to the trie.
 	 */
 	async function withStateEntries<T>(
 		entries: readonly StateEntry[],
@@ -2135,20 +2123,19 @@ export async function createNodeWithInternals(
 	 * ORDER MATTERS, and each step re-reads the account so no step writes back a
 	 * stale copy over the previous one:
 	 *
-	 *  1. CODE FIRST. `putCode` rewrites the account's `codeHash`, and in `'none'`
-	 *     mode CREATES an empty account when there is none, so it must come before
+	 *  1. CODE FIRST. `putCode` rewrites the account's `codeHash`, and CREATES an
+	 *     empty account when there is none, so it must come before
 	 *     anything that states the account.
 	 *  2. THE ACCOUNT: a whole account replaces what `putCode` left (its `codeHash`
 	 *     is K's own), and `balance` / `nonce` are a read-modify-write on top.
-	 *  3. STORAGE: a clear, then the slots (in trie mode a slot write rewrites the
-	 *     account's `storageRoot`, so it comes after the account).
+	 *  3. STORAGE: a clear, then the slots.
 	 *  4. ABSENT LAST: an empty code entry, then `deleteAccount`. The account must
 	 *     read as ABSENT, not as a zero account, and two upstream behaviours stand
 	 *     in the way: `putCode` creates an account (so the code is emptied BEFORE
 	 *     the delete), and `deleteAccount` leaves the address's code in the code
 	 *     map, where `eth_getCode` and the default engine's `EXTCODESIZE` would
 	 *     still see it (so the code is emptied at all). `deleteAccount` also clears
-	 *     the storage in `'none'` mode.
+	 *     the storage.
 	 */
 	async function applyStateEntry(e: StateEntry): Promise<void> {
 		if (e.code !== undefined) await sm.putCode(e.address, e.code);
@@ -2693,8 +2680,9 @@ export async function createNodeWithInternals(
 
 			// ---- Runtime state cheats (anvil/hardhat-style; for tests/local tooling) ----
 			// These MUTATE state directly (no tx). Honest about being non-standard: they
-			// are `evm_*`-namespaced. In trie mode each commits into the trie so the next
-			// getStateRoot() reflects the change.
+			// are `evm_*`-namespaced. They write the flat state only; in trie mode the
+			// open record names what they wrote, so the next getStateRoot() (or mined
+			// block) rehashes it into the derived trie.
 			case 'evm_setBalance': {
 				// params: [address, valueHex]
 				const addr = createAddressFromString(params[0]);
@@ -2715,8 +2703,6 @@ export async function createNodeWithInternals(
 				// params: [address, codeHex]
 				const addr = createAddressFromString(params[0]);
 				await sm.putCode(addr, hexToBytes(params[1]));
-				touchedAccounts.add(addr.toString());
-				await commitIfTrie();
 				return true;
 			}
 			case 'evm_setStorageAt': {
@@ -2728,8 +2714,6 @@ export async function createNodeWithInternals(
 					slot,
 					setLengthLeft(hexToBytes(params[2]), 32),
 				);
-				touchedAccounts.add(addr.toString());
-				await commitIfTrie();
 				return true;
 			}
 			case 'evm_setAccount': {
@@ -2749,7 +2733,6 @@ export async function createNodeWithInternals(
 						setLengthLeft(hexToBytes(val as string), 32),
 					);
 				}
-				await commitIfTrie();
 				return true;
 			}
 
@@ -2962,43 +2945,25 @@ export async function createNodeWithInternals(
 		const code: Record<string, string> = {};
 		const storage: Record<string, Record<string, string>> = {};
 
-		if (stateMode === 'trie') {
-			// Trie mode dumps accounts + code via the touched-account set. NOTE: it does
-			// NOT dump contract STORAGE — the EVM journals storage on an internal
-			// shallowCopy of the state manager that bypasses any interception, and the
-			// trie's own dumpStorage exposes only keccak-HASHED slot keys (not the raw
-			// slots loadState needs). Full-storage persistence is a 'none'-mode feature
-			// (where the live Map IS the committed state). Trie mode is for the REAL
-			// state root (conformance block roots), not for IndexedDB persist.
-			for (const addr of touchedAccounts) {
-				const address = createAddressFromString(addr);
-				const acc = await sm.getAccount(address);
-				if (acc === undefined) continue;
-				accounts[addr] = hex(acc.serialize());
-				const c = await sm.getCode(address);
-				if (c.length > 0) code[addr] = hex(c);
-			}
-		} else {
-			// 'none' mode: the account and code stacks are still plain Maps whose TOP
-			// frame is the live set, and storage is per-account with per-checkpoint
-			// OVERLAYS, flattened by liveStorage(). Dump both directly (no trie walk).
-			//
-			// THE SERIALISED FORMAT IS NOT THE INTERNAL LAYOUT and must not follow it:
-			// this output is persisted data (IndexedDB, loadState fixtures) with existing
-			// state behind it. It stays `{address: {slot: value}}` in 0x-hex, and
-			// `test/storage-overlay.spec.ts` asserts it byte-identical to a dump taken
-			// from the pre-overlay flat layout.
-			const live = sm as OverlayStorageStateManager;
-			const accMap = live.accountStack[live.accountStack.length - 1];
-			const codeMap = live.codeStack[live.codeStack.length - 1];
-			for (const [addr, acc] of accMap) {
-				if (acc !== undefined) accounts[addr] = hex(acc.serialize());
-			}
-			for (const [addr, c] of codeMap) code[addr] = hex(c);
-			for (const [addr, slots] of live.liveStorage()) {
-				for (const [slot, val] of slots)
-					(storage[addr] ??= {})[slot] = hex(val);
-			}
+		// EVERY MODE DUMPS THE SAME WAY, storage included: the account and code
+		// stacks are plain Maps whose TOP frame is the live set, and storage is
+		// per-account with per-checkpoint OVERLAYS, flattened by liveStorage(). A
+		// trie-mode node runs on this same flat state, and its derived trie is NOT
+		// serialised: `loadState` rebuilds it from the loaded flat state.
+		//
+		// THE SERIALISED FORMAT IS NOT THE INTERNAL LAYOUT and must not follow it:
+		// this output is persisted data (IndexedDB, loadState fixtures) with existing
+		// state behind it. It stays `{address: {slot: value}}` in 0x-hex, and
+		// `test/storage-overlay.spec.ts` asserts it byte-identical to a dump taken
+		// from the pre-overlay flat layout.
+		const accMap = sm.accountStack[sm.accountStack.length - 1];
+		const codeMap = sm.codeStack[sm.codeStack.length - 1];
+		for (const [addr, acc] of accMap) {
+			if (acc !== undefined) accounts[addr] = hex(acc.serialize());
+		}
+		for (const [addr, c] of codeMap) code[addr] = hex(c);
+		for (const [addr, slots] of sm.liveStorage()) {
+			for (const [slot, val] of slots) (storage[addr] ??= {})[slot] = hex(val);
 		}
 
 		const blocks: SerializedBlock[] = [];
@@ -3191,6 +3156,12 @@ export async function createNodeWithInternals(
 		historyFloor = latestNumber;
 		if (stateHistoryBlocks !== undefined && state.history !== undefined)
 			loadHistory(state.history, stateHistoryBlocks);
+		// ...and the derived trie described that replaced state too. It is REBUILT
+		// from the loaded flat state, once, exactly as at construction: the dump
+		// carries no trie (it never has to: the flat state determines it), and a
+		// load is a baseline in no change set, so nothing else would put it there.
+		if (computesStateRoot)
+			derivedTrie = await DerivedStateTrie.build(sm, common);
 	}
 
 	// ---------- persistence auto-load on creation ----------
@@ -3300,10 +3271,10 @@ export async function createNodeWithInternals(
 					"no state root in 'none' mode — create the node with stateMode:'trie' for a real Merkle-Patricia root",
 				);
 			}
-			// SERIALISED like the rest, because this one READS BY WRITING: in trie mode
-			// `currentStateRoot` flushes the state manager's cache into the trie, so a
-			// root taken mid-transaction would both report an uncommitted state and
-			// push it into the trie on the way.
+			// SERIALISED like the rest, because this one READS BY WRITING: it applies
+			// the open record to the derived trie, which reads the COMMITTED flat state
+			// and refuses to run with a checkpoint open, so a root taken
+			// mid-transaction would report a state no block (or cheat) produced.
 			return serialise(currentStateRoot);
 		},
 		onNewHead(cb) {

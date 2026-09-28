@@ -8,10 +8,9 @@
  * reference node built inside it. What changes here is which EVM executed and
  * COMMITTED them.
  *
- * WHICH STATE MODE: `'none'`, the only one this engine serves (it refuses
- * `'trie'` at construction — ADR 0005). That refusal is asserted in
- * `revm-conformance.spec.ts`, where the mode split is decided; it is not restated
- * here.
+ * WHICH STATE MODE: `'none'`, the default. (This engine used to refuse
+ * `'trie'`, ADR 0005; it serves it since ADR 0014, covered by
+ * `revm-trie-derived.spec.ts` and `revm-conformance.spec.ts`.)
  *
  * ONE ENGINE PER NODE: the battery builds a reference node on the default engine
  * and ONE node on this engine, so a single `createRevmEngine()` is enough — but

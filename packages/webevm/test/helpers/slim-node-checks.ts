@@ -391,11 +391,12 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	// here through the node's PUBLIC surface: seed slot 0, then deploy onto that
 	// exact address.
 	//
-	// The two modes legitimately differ, and both are asserted so the asymmetry is
-	// pinned rather than discovered: 'none' has no storageRoot, so the EIP-7610
-	// collision guard cannot fire and creation proceeds with CLEARED storage
-	// (pre-7610 semantics, what the EVM asks for); 'trie' computes a real
-	// storageRoot, so the guard fires and creation is REJECTED. Neither inherits.
+	// BOTH MODES follow the reference spec (EIP-684 plus the Yellow Paper,
+	// execution-specs PR #3508): a zero-nonce, code-less target that holds storage
+	// is NOT a collision, so the creation proceeds and the storage is WIPED. 'trie'
+	// used to REJECT it (EIP-7610, from `MerkleStateManager`'s real storageRoot);
+	// it now runs on the same flat state as 'none' (ADR 0014). Neither inherits.
+	// See work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md.
 	for (const mode of ['none', 'trie'] as const) {
 		const n = await createNode({
 			chainId: CHAIN_ID,
@@ -415,13 +416,9 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 			from: account.address,
 			nonce: BigInt(nonce),
 		});
-		// Give the target a balance FIRST. This is not incidental:
-		// `MerkleStateManager.putStorage` throws `putStorage() called on non-existing
-		// account`, so 'trie' mode cannot seed storage at a bare address at all. A
-		// balance-only account is still not an EIP-7610 collision (the guard reads
-		// nonce, codeHash and storageRoot, never balance), so creation is decided by
-		// the storage alone, which is the thing under test. Doing it in BOTH modes
-		// keeps the setup identical so the only variable is storageRoot tracking.
+		// Give the target a balance FIRST, so it is an existing account (as it would
+		// be on a real chain) and the storage is the only thing it holds besides.
+		// A balance is never a collision (the rule reads nonce and code).
 		await n.request({method: 'evm_setBalance', params: [target, '0x1']});
 		// Seed slot 0 = 99 at that address. No nonce and no code, so the account is
 		// not a collision for any reason OTHER than its storage.
