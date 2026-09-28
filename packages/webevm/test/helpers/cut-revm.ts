@@ -84,6 +84,8 @@
  *                      far-future nonce, an unaffordable transaction and a gas
  *                      limit below intrinsic gas, refused in the NODE's own words
  *                      on both engines, with every state reading unmoved
+ *   - 'rpc-params'  : the SHARED state-override battery (helpers/rpc-params.ts):
+ *                      overrides the node applies are SEEN by revm and gone after
  */
 import type {
 	CodeUnderTest,
@@ -102,6 +104,7 @@ import {runRevmInvalidTransactions} from './revm-invalid-transactions.js';
 import {runRevmStorageKeys} from './revm-storage-keys.js';
 import {runRevmStateRoundTrip} from './revm-state-roundtrip.js';
 import {runRevmConcurrency} from './revm-concurrency.js';
+import {runRevmRpcParams} from './revm-rpc-params.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {
 	runRevmPersistWrite,
@@ -285,6 +288,15 @@ const cut: CodeUnderTest = {
 		// write-versus-write and the dirty read: this engine cannot commit from a
 		// `call`, so it is the transaction path and the node's own dispatcher that
 		// two overlapping requests meet on.
+		if (ctx.params.mode === 'rpc-params') {
+			try {
+				results.revmRpcParams = await runRevmRpcParams();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
 		if (ctx.params.mode === 'concurrency') {
 			try {
 				results.revmConcurrency = await runRevmConcurrency();

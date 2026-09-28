@@ -29,6 +29,13 @@
  *                            the CREATE2 factory mines at it, and fails one gas
  *                            below), the common cases stay un-inflated, and what
  *                            cannot succeed at any limit is an ERROR
+ *   - 'block-pinned-state' : a state read pinned to a block below the head is
+ *                            REFUSED (never answered from the head), and one
+ *                            pinned to the head by any reference still works
+ *   - 'rpc-params'         : parameters that used to be IGNORED are honoured or
+ *                            refused: eth_call/eth_estimateGas state overrides
+ *                            (in 'none' AND 'trie' mode), eth_getLogs blockHash,
+ *                            eth_feeHistory newestBlock
  *
  * `webevm/revm` has its OWN cut (./cut-revm.ts), because its bundle
  * carries the revm `.wasm` asset and no other spec should pay for it.
@@ -74,6 +81,12 @@ import {runStorageOverlayChecks} from './storage-overlay.js';
 import {runEngineSeamChecks} from './engine-seam.js';
 import {runRpcBlockChecks} from './rpc-block.js';
 import {runEstimateGasChecks} from './estimate-gas.js';
+import {runBlockPinnedStateChecks} from './block-pinned-state.js';
+import {
+	runStateOverrideChecks,
+	runLogsAndFeeHistoryChecks,
+	runPendingNonceChecks,
+} from './rpc-params.js';
 import {runConcurrencyChecks} from './concurrency.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
@@ -153,6 +166,33 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'estimate-gas') {
 			try {
 				results.estimateGas = await runEstimateGasChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// block-pinned-state: eth_call and every other state read serve the head and
+		// REFUSE a block below it, rather than ignoring the block parameter.
+		if (ctx.params.mode === 'block-pinned-state') {
+			try {
+				results.blockPinnedState = await runBlockPinnedStateChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// rpc-params: state overrides, eth_getLogs blockHash and eth_feeHistory
+		// newestBlock, each of which used to be silently ignored.
+		if (ctx.params.mode === 'rpc-params') {
+			try {
+				results.rpcParams = {
+					overridesNone: await runStateOverrideChecks(),
+					overridesTrie: await runStateOverrideChecks({stateMode: 'trie'}),
+					logsAndFeeHistory: await runLogsAndFeeHistoryChecks(),
+					pendingNonce: await runPendingNonceChecks(),
+				};
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

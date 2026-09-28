@@ -76,8 +76,17 @@ test('slim-node EIP-1193 surface under a typical viem/wagmi lifecycle', async ({
 	// so every percentile carries the SAME value and asserting the values would
 	// measure nothing; the widths are the property, held for two different request
 	// lengths so a hardcoded 3 fails as loudly as a hardcoded 1.
-	expect(s.feeHistoryRewardWidths.threePercentiles).toEqual([3, 3, 3, 3]);
-	expect(s.feeHistoryRewardWidths.onePercentile).toEqual([1, 1]);
+	//
+	// THE NUMBER OF BLOCKS is not asserted as the count REQUESTED: this chain is
+	// shorter than 4 blocks here, and the window is clamped at genesis as geth
+	// clamps it. (It used to be padded with entries for blocks that do not exist.)
+	const {threePercentiles, onePercentile} = s.feeHistoryRewardWidths;
+	expect(threePercentiles.length).toBeGreaterThan(0);
+	expect(threePercentiles.length).toBeLessThanOrEqual(4);
+	expect(threePercentiles.every((w: number) => w === 3)).toBe(true);
+	expect(onePercentile.length).toBeGreaterThan(0);
+	expect(onePercentile.length).toBeLessThanOrEqual(2);
+	expect(onePercentile.every((w: number) => w === 1)).toBe(true);
 
 	// Methods viem RELIABLY emits in this lifecycle must be both emitted AND
 	// answered (not -32601). NOTE: now that eth_fillTransaction is implemented,

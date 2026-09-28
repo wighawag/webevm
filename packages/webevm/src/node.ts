@@ -50,6 +50,7 @@ import {
 	bigIntToHex,
 	setLengthLeft,
 	bigIntToBytes,
+	unpadBytes,
 } from '@ethereumjs/util';
 
 // `@ethereumjs/util`'s hexToBytes is typed to require a `0x${string}` literal.
@@ -1143,7 +1144,28 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		return r ? receiptToRpc(r) : null;
 	}
 
+	/**
+	 * The nonce `address` sends with next: its account nonce, advanced past each
+	 * CONTIGUOUS queued transaction of its own (manual/interval mining; the queue
+	 * is always empty under auto mining). Contiguous, as geth counts it: a queued
+	 * nonce beyond a gap does not advance it, because that transaction will not
+	 * execute until the gap is filled.
+	 */
+	async function pendingNonce(address: Address): Promise<bigint> {
+		let n = (await sm.getAccount(address))?.nonce ?? 0n;
+		const queued = new Set<bigint>();
+		for (const q of pending)
+			if (q.sender.equals(address)) queued.add(q.tx.nonce);
+		while (queued.has(n)) n++;
+		return n;
+	}
+
 	// ---------- block lookup helpers ----------
+	/**
+	 * A block TAG or NUMBER as a block number. A string that is neither is a
+	 * -32602, not a JavaScript `SyntaxError` escaping from `BigInt` (which is what
+	 * `eth_getBlockByNumber('yesterday')` used to throw), and not a silent `latest`.
+	 */
 	function resolveBlockTag(tag: unknown): number {
 		if (
 			tag === 'latest' ||
@@ -1154,9 +1176,143 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		)
 			return latestNumber;
 		if (tag === 'earliest') return 0;
-		if (typeof tag === 'string') return Number(BigInt(tag));
-		if (typeof tag === 'number') return tag;
-		return latestNumber;
+		// A 32-byte hex string is a block HASH, which this parameter does not take:
+		// read as a number it would be ~1e76 and look like "far above the head".
+		if (typeof tag === 'string' && /^0x[0-9a-fA-F]{64}$/.test(tag))
+			throw new RpcError(
+				-32602,
+				`invalid block parameter: ${tag} is a block hash, and this parameter takes a block number or tag.`,
+			);
+		if (typeof tag === 'string' && /^0x[0-9a-fA-F]+$/.test(tag))
+			return Number(BigInt(tag));
+		if (typeof tag === 'number' && Number.isSafeInteger(tag) && tag >= 0)
+			return tag;
+		throw new RpcError(
+			-32602,
+			`invalid block parameter: ${JSON.stringify(tag)}. Expected a block tag (latest, pending, safe, finalized, earliest) or a hex block number.`,
+		);
+	}
+
+	/**
+	 * REFUSE A STATE READ PINNED TO A BLOCK WHOSE STATE THIS NODE DOES NOT HOLD,
+	 * instead of answering it from the head. Every method that reads STATE at a
+	 * block (`eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`,
+	 * `eth_getStorageAt`, `eth_getTransactionCount`) calls this with its block
+	 * parameter BEFORE touching state.
+	 *
+	 * ## Why this exists
+	 *
+	 * Those methods used to ignore the block parameter entirely and answer from the
+	 * live state, while `eth_getLogs` and `eth_getBlockByNumber` honoured theirs. A
+	 * client that pins a PAIR of reads to one block so they describe the same moment
+	 * (logs up to block N, and a view call at block N) got logs as of N and storage
+	 * as of the head: a position whose move it could not find, with no error. That is
+	 * a different answer from every other node, delivered silently, which is the one
+	 * outcome that is not acceptable.
+	 *
+	 * ## Why REFUSE rather than serve historical state
+	 *
+	 * This node holds exactly ONE state: the live one. In the default `'none'` mode
+	 * the state manager's checkpoint/overlay stack is the journal of the execution in
+	 * flight, not a history of blocks, and nothing of block N survives the mining of
+	 * N+1. Serving history would mean retaining a per-block copy (or a per-block
+	 * reverse diff) of every account and slot a block touched, AND routing an
+	 * engine's reads to it: the revm engine reads the live stacks synchronously
+	 * mid-opcode (./revm-state-store.ts, ADR 0005) and cannot run on `'trie'` at
+	 * all, so even `'trie'` mode's per-block `stateRoot` would help one engine in
+	 * one mode. Swapping a shared state manager's root under a read and back is also
+	 * precisely the kind of shared-stack mutation the serialisation point above
+	 * exists to contain. A bounded history is a feature to design on its own; until
+	 * then the honest answer to "what was the state at N" is "not available here".
+	 *
+	 * ## What is served, and what is refused
+	 *
+	 *  - SERVED: `latest`, `pending`, `safe`, `finalized`, an absent parameter, and a
+	 *    number, hash or EIP-1898 `{blockNumber}` / `{blockHash}` object that names
+	 *    the HEAD block. Pinning to the block you just read is the common case and it
+	 *    is almost always the head, so it must keep working. (`pending` is the head
+	 *    because in `manual`/`interval` mining the queued transactions have not
+	 *    executed yet and this node has no speculative pending state; the one
+	 *    exception is `eth_getTransactionCount`, which adds the sender's queued
+	 *    transactions so that two sends before a mine get two nonces. `safe` and
+	 *    `finalized` are the head because a local chain has no reorgs.) `earliest`
+	 *    is served only while the head IS block 0.
+	 *  - REFUSED, -32000 `historical state not available`: any existing block below
+	 *    the head. The same code geth uses for pruned state (`missing trie node`),
+	 *    with a message that says what to do.
+	 *  - REFUSED, -32000 `header not found`: a number above the head or a hash no
+	 *    block has (geth's exact wording for both).
+	 *  - REFUSED, -32602: a parameter that is not a block at all.
+	 *
+	 * THE STATE AT THE HEAD INCLUDES `evm_set*` CHEATS applied since it was mined,
+	 * exactly as `latest` always has: those mutate live state without a block.
+	 */
+	function requireHeadState(blockParam: unknown, method: string): void {
+		if (
+			blockParam == null ||
+			blockParam === 'latest' ||
+			blockParam === 'pending' ||
+			blockParam === 'safe' ||
+			blockParam === 'finalized'
+		)
+			return;
+		let number: number | undefined;
+		let hash: string | undefined;
+		if (blockParam === 'earliest') number = 0;
+		else if (typeof blockParam === 'number') number = blockParam;
+		else if (typeof blockParam === 'string') {
+			// A 32-byte hex string is a block HASH (geth accepts it bare, EIP-1898).
+			if (/^0x[0-9a-fA-F]{64}$/.test(blockParam)) hash = blockParam;
+			else if (/^0x[0-9a-fA-F]+$/.test(blockParam))
+				number = Number(BigInt(blockParam));
+		} else if (typeof blockParam === 'object') {
+			const o = blockParam as {blockNumber?: unknown; blockHash?: unknown};
+			// EIP-1898: exactly one of the two. geth refuses both at once, and so
+			// does this node rather than silently preferring one.
+			if (o.blockHash != null && o.blockNumber != null)
+				throw new RpcError(
+					-32602,
+					`invalid block parameter for ${method}: pass blockHash or blockNumber, not both.`,
+				);
+			if (typeof o.blockHash === 'string') hash = o.blockHash;
+			else if (typeof o.blockNumber === 'string') {
+				if (o.blockNumber === 'earliest') number = 0;
+				else if (/^0x[0-9a-fA-F]+$/.test(o.blockNumber))
+					number = Number(BigInt(o.blockNumber));
+				else return requireHeadState(o.blockNumber, method);
+			}
+		}
+		if (hash !== undefined) {
+			const n = blockByHash.get(hash.toLowerCase());
+			if (n === undefined)
+				throw new RpcError(
+					-32000,
+					`header not found: ${method} was pinned to block hash ${hash}, which no block on this node has.`,
+				);
+			number = n;
+		}
+		// A well-formed number too large to be a safe integer names a block far
+		// above the head: that is "not found", not "not a block".
+		if (number !== undefined && number > Number.MAX_SAFE_INTEGER)
+			number = Number.MAX_SAFE_INTEGER;
+		if (number === undefined || !Number.isSafeInteger(number) || number < 0)
+			throw new RpcError(
+				-32602,
+				`invalid block parameter for ${method}: ${JSON.stringify(blockParam)}. ` +
+					`Expected a block tag (latest, pending, safe, finalized, earliest), a hex block number, a block hash, or {blockNumber}/{blockHash}.`,
+			);
+		if (number === latestNumber) return;
+		if (number > latestNumber)
+			throw new RpcError(
+				-32000,
+				`header not found: ${method} was pinned to block ${number}, but the head of this node is block ${latestNumber}.`,
+			);
+		throw new RpcError(
+			-32000,
+			`historical state not available: ${method} was pinned to block ${number}, but this node keeps only the state at its head ` +
+				`(block ${latestNumber}), so it REFUSES rather than answer from a later state than the one you asked for. ` +
+				`Pin to the head (or 'latest') instead; logs and blocks remain queryable at any height.`,
+		);
 	}
 
 	/**
@@ -1267,6 +1423,171 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			logIndex: numHex(l.logIndex),
 			removed: false,
 		};
+	}
+
+	/**
+	 * RUN A READ AGAINST THE HEAD STATE WITH geth-STYLE STATE OVERRIDES APPLIED, and
+	 * leave no trace of them. `eth_call` and `eth_estimateGas` take them as their
+	 * third parameter: `{[address]: {balance?, nonce?, code?, state?, stateDiff?}}`,
+	 * where `state` REPLACES the account's whole storage and `stateDiff` patches
+	 * individual slots. They used to be ignored, which answered a question the
+	 * caller had not asked, with no error.
+	 *
+	 * ## Why a checkpoint here is safe, given the hazard documented at `serialise`
+	 *
+	 * The corruption described there needs two executions to interleave on the one
+	 * checkpoint stack. This level is opened and closed by the SAME request, inside
+	 * the serialisation point, with the read nested strictly inside it: the default
+	 * engine's own checkpoint/revert lands on top of this one and pops before this
+	 * one does, and revm reads the top of the stack on every access and never
+	 * commits. So the stack is `[base, overrides, (call)]` and unwinds in order.
+	 * It is also the same mechanism `evmCall` already relies on for purity, one
+	 * level lower. In `'trie'` mode `MerkleStateManager.revert()` reverts the account
+	 * trie and drops its storage-trie cache, so a replaced storage does not leak.
+	 *
+	 * ## What is refused
+	 *
+	 * `state` and `stateDiff` on the same account (geth refuses that too), and any
+	 * field this node does not implement (`movePrecompileToAddress`, for one): a
+	 * -32602 naming it, never a call run without it.
+	 */
+	async function withStateOverrides<T>(
+		overrides: unknown,
+		method: string,
+		read: () => Promise<T>,
+	): Promise<T> {
+		if (overrides == null) return read();
+		if (typeof overrides !== 'object' || Array.isArray(overrides))
+			throw new RpcError(
+				-32602,
+				`invalid state overrides for ${method}: expected an object keyed by address.`,
+			);
+		const supported = new Set([
+			'balance',
+			'nonce',
+			'code',
+			'state',
+			'stateDiff',
+		]);
+		// PARSE EVERYTHING BEFORE OPENING THE LEVEL, into values that cannot fail to
+		// apply, so a malformed override is a -32602 naming it (never a raw
+		// `SyntaxError` from `BigInt`), and a refusal never has a half-applied
+		// override to unwind.
+		const bad = (what: string): never => {
+			throw new RpcError(
+				-32602,
+				`invalid state override in ${method}: ${what}.`,
+			);
+		};
+		const quantity = (v: unknown, what: string): bigint => {
+			if (typeof v !== 'string' || !/^0x[0-9a-fA-F]+$/.test(v))
+				return bad(`${what} must be a hex quantity, got ${JSON.stringify(v)}`);
+			const n = BigInt(v);
+			// A 32-byte word is the widest thing any override field names.
+			if (n >= 1n << 256n) return bad(`${what} does not fit in 32 bytes`);
+			return n;
+		};
+		const data = (v: unknown, what: string): Uint8Array => {
+			if (typeof v !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(v))
+				return bad(`${what} must be even-length hex, got ${JSON.stringify(v)}`);
+			return hexToBytes(v);
+		};
+		const parsed = Object.entries(overrides as Record<string, any>).map(
+			([addr, o]) => {
+				if (o == null || typeof o !== 'object' || Array.isArray(o))
+					return bad(`the override for ${addr} must be an object`);
+				for (const k of Object.keys(o))
+					if (!supported.has(k))
+						throw new RpcError(
+							-32602,
+							`state override field not supported by this node: ${addr}.${k} in ${method}. ` +
+								`Supported: balance, nonce, code, state, stateDiff.`,
+						);
+				if (o.state != null && o.stateDiff != null)
+					throw new RpcError(
+						-32602,
+						`account ${addr} has both 'state' and 'stateDiff' in ${method}; pass one.`,
+					);
+				let address: Address;
+				try {
+					address = createAddressFromString(addr);
+				} catch {
+					return bad(`${JSON.stringify(addr)} is not an address`);
+				}
+				const slotsIn = o.state ?? o.stateDiff;
+				if (
+					slotsIn != null &&
+					(typeof slotsIn !== 'object' || Array.isArray(slotsIn))
+				)
+					return bad(
+						`${addr}.${o.state != null ? 'state' : 'stateDiff'} must be an object of slot -> value`,
+					);
+				const slots = Object.entries(slotsIn ?? {}).map(([slot, val]) => {
+					const value = data(val, `${addr} slot ${slot}`);
+					// A slot value is ONE word: a longer one would be silently truncated
+					// to its low 32 bytes by the padding below, so it is refused.
+					if (value.length > 32)
+						return bad(`${addr} slot ${slot} value is longer than 32 bytes`);
+					return {
+						key: setLengthLeft(
+							bigIntToBytes(quantity(slot, `${addr} slot key`)),
+							32,
+						),
+						// SHORTEST FORM, as the EVM itself stores a value: a padded zero
+						// and a missing slot must be the same thing to SSTORE's gas rules.
+						value: unpadBytes(setLengthLeft(value, 32)),
+					};
+				});
+				return {
+					address,
+					balance:
+						o.balance != null
+							? quantity(o.balance, `${addr}.balance`)
+							: undefined,
+					nonce:
+						o.nonce != null ? quantity(o.nonce, `${addr}.nonce`) : undefined,
+					code: o.code != null ? data(o.code, `${addr}.code`) : undefined,
+					replaceStorage: o.state != null,
+					slots,
+				};
+			},
+		);
+		await sm.checkpoint();
+		try {
+			for (const o of parsed) {
+				// ORDER MATTERS: account fields first (read-modify-write), then code
+				// (which rewrites the account's codeHash), then storage (which, in trie
+				// mode, rewrites its storageRoot). Each step re-reads the account, so no
+				// step writes back a stale copy over the previous one.
+				if (o.balance !== undefined || o.nonce !== undefined) {
+					const acc = (await sm.getAccount(o.address)) ?? new Account();
+					if (o.balance !== undefined) acc.balance = o.balance;
+					if (o.nonce !== undefined) acc.nonce = o.nonce;
+					await sm.putAccount(o.address, acc);
+				}
+				if (o.code !== undefined) await sm.putCode(o.address, o.code);
+				if (o.replaceStorage) await sm.clearStorage(o.address);
+				for (const {key, value} of o.slots)
+					await sm.putStorage(o.address, key, value);
+			}
+			return await read();
+		} finally {
+			await sm.revert();
+		}
+	}
+
+	/**
+	 * geth's `eth_call` takes BLOCK overrides as a fourth parameter. This node does
+	 * not implement them, so a request carrying them is refused rather than run
+	 * against the real block environment.
+	 */
+	function refuseBlockOverrides(blockOverrides: unknown, method: string): void {
+		if (blockOverrides == null) return;
+		throw new RpcError(
+			-32602,
+			`block overrides are not supported by this node (${method}, 4th parameter). ` +
+				`The call would otherwise run against the real block environment.`,
+		);
 	}
 
 	// ---------- eth_call / estimateGas through the ENGINE's READ half (no signing) ----
@@ -1579,7 +1900,11 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			}
 
 			case 'eth_call': {
-				const r = await evmCall(params[0] ?? {});
+				requireHeadState(params[1], 'eth_call');
+				refuseBlockOverrides(params[3], 'eth_call');
+				const r = await withStateOverrides(params[2], 'eth_call', () =>
+					evmCall(params[0] ?? {}),
+				);
 				if (r.error)
 					throw new RpcError(3, 'execution reverted', hex(r.returnValue));
 				return hex(r.returnValue);
@@ -1589,7 +1914,13 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 				// re-executing it. The whole method is {@link estimateGas} above,
 				// including why it is a search rather than the run-and-measure it used to
 				// be, and where the request's EIP-2930 access list is charged.
-				return numHex(await estimateGas(params[0] ?? {}));
+				requireHeadState(params[1], 'eth_estimateGas');
+				refuseBlockOverrides(params[3], 'eth_estimateGas');
+				return numHex(
+					await withStateOverrides(params[2], 'eth_estimateGas', () =>
+						estimateGas(params[0] ?? {}),
+					),
+				);
 
 			case 'eth_fillTransaction': {
 				// Fill the missing fields of a tx request and return {tx, raw} like geth
@@ -1603,8 +1934,10 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 					: createAddressFromString(
 							'0x0000000000000000000000000000000000000000',
 						);
-				const acc = await sm.getAccount(from);
-				const nonce = p.nonce != null ? BigInt(p.nonce) : (acc?.nonce ?? 0n);
+				// The PENDING nonce, as geth fills it: the account's nonce advanced past
+				// the transactions it already has queued.
+				const nonce =
+					p.nonce != null ? BigInt(p.nonce) : await pendingNonce(from);
 				const value = p.value != null ? BigInt(p.value) : 0n;
 				const dataHex: string = p.data ?? p.input ?? '0x';
 				const isCreate = !p.to;
@@ -1679,19 +2012,35 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 				return {raw: hex(unsigned.serialize()), tx};
 			}
 
+			// EVERY state read at a block goes through `requireHeadState` first: it is
+			// served at the head and REFUSED below it, never answered from the head
+			// for a block that is not the head.
 			case 'eth_getBalance': {
+				requireHeadState(params[1], 'eth_getBalance');
 				const acc = await sm.getAccount(createAddressFromString(params[0]));
 				return numHex(acc?.balance ?? 0n);
 			}
 			case 'eth_getTransactionCount': {
-				const acc = await sm.getAccount(createAddressFromString(params[0]));
-				return numHex(acc?.nonce ?? 0n);
+				requireHeadState(params[1], 'eth_getTransactionCount');
+				const address = createAddressFromString(params[0]);
+				// `pending` COUNTS THE QUEUED TRANSACTIONS, the one state read where it
+				// differs from the head: a client picking a nonce asks for `pending`
+				// (viem does by default), and in manual/interval mining two sends
+				// before a mine would otherwise get the SAME nonce, the second then
+				// refused at mine time as a replay.
+				return numHex(
+					params[1] === 'pending'
+						? await pendingNonce(address)
+						: ((await sm.getAccount(address))?.nonce ?? 0n),
+				);
 			}
 			case 'eth_getCode': {
+				requireHeadState(params[1], 'eth_getCode');
 				const code = await sm.getCode(createAddressFromString(params[0]));
 				return hex(code);
 			}
 			case 'eth_getStorageAt': {
+				requireHeadState(params[2], 'eth_getStorageAt');
 				const addr = createAddressFromString(params[0]);
 				const slot = setLengthLeft(bigIntToBytes(BigInt(params[1])), 32);
 				const val = await sm.getStorage(addr, slot);
@@ -1765,7 +2114,50 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			case 'eth_maxPriorityFeePerGas':
 				return numHex(maxPriorityFeePerGas);
 			case 'eth_feeHistory': {
-				const count = Number(BigInt(params[0] ?? '0x1'));
+				// params: [blockCount, newestBlock, rewardPercentiles]. `newestBlock` is
+				// HONOURED (it used to be ignored, and the window always ended at the head),
+				// and the per-block base fee and gas-used ratio are the stored blocks' own.
+				// Only `reward` stays synthetic: this node's priority fee is a constant.
+				const rawCount = params[0] ?? '0x1';
+				const requested =
+					typeof rawCount === 'number' && Number.isSafeInteger(rawCount)
+						? rawCount
+						: typeof rawCount === 'string' && /^0x[0-9a-fA-F]+$/.test(rawCount)
+							? Number(BigInt(rawCount))
+							: NaN;
+				if (!(requested >= 0))
+					throw new RpcError(
+						-32602,
+						`invalid eth_feeHistory blockCount: ${JSON.stringify(rawCount)}. Expected a hex quantity.`,
+					);
+				const newest = resolveBlockTag(params[1] ?? 'latest');
+				if (newest > latestNumber)
+					throw new RpcError(
+						-32000,
+						`request beyond head block: eth_feeHistory newestBlock is ${newest}, but the head of this node is block ${latestNumber}.`,
+					);
+				// geth caps a request at 1024 blocks, and nothing precedes block 0.
+				const count = Math.max(0, Math.min(requested, 1024, newest + 1));
+				const oldest = newest - count + 1;
+				const nextBaseFee = (n: number): string => {
+					const sb = blockStore.get(n);
+					return sb
+						? sb.header.baseFeePerGas
+						: numHex(blockEnv?.baseFeePerGas ?? baseFeePerGas);
+				};
+				const ratio = (n: number): number => {
+					// The header's own `gasUsed` is a documented 0x0 placeholder, so the
+					// block's usage is summed from its receipts, which are real.
+					const sb = blockStore.get(n);
+					if (!sb) return 0;
+					let used = 0n;
+					for (const th of sb.header.transactions) {
+						const r = receipts.get(th);
+						if (r) used += BigInt(r.gasUsed);
+					}
+					const limit = BigInt(sb.header.gasLimit);
+					return limit === 0n ? 0 : Number(used) / Number(limit);
+				};
 				// `reward` must carry ONE entry per requested percentile, per block. Returning a
 				// single entry regardless of `rewardPercentiles` breaks any caller that asks for
 				// several and indexes them: rocketh requests [10, 50, 80] and reads index 1 and 2,
@@ -1777,11 +2169,20 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 					percentiles.length > 0 ? percentiles : [50]
 				).map(() => numHex(maxPriorityFeePerGas));
 				return {
-					oldestBlock: numHex(Math.max(0, latestNumber - count + 1)),
-					baseFeePerGas: Array.from({length: count + 1}, () =>
-						numHex(baseFeePerGas),
+					// An empty window is geth's empty answer, oldestBlock included.
+					oldestBlock: numHex(count === 0 ? 0 : oldest),
+					// One per block in the window PLUS the block after it, which is the
+					// stored block when there is one and the next block this node will mine
+					// when the window ends at the head.
+					baseFeePerGas:
+						count === 0
+							? []
+							: Array.from({length: count + 1}, (_, i) =>
+									nextBaseFee(oldest + i),
+								),
+					gasUsedRatio: Array.from({length: count}, (_, i) =>
+						ratio(oldest + i),
 					),
-					gasUsedRatio: Array.from({length: count}, () => 0.5),
 					reward: Array.from({length: count}, () => rewardPerBlock),
 				};
 			}
@@ -1825,9 +2226,33 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 				// is deferred — see tasks/slim-node-eth-getlogs-index.md. Keep this scan as
 				// the authoritative semantics if/when an index is added.
 				const f = params[0] ?? {};
-				const from = f.fromBlock != null ? resolveBlockTag(f.fromBlock) : 0;
-				const to =
-					f.toBlock != null ? resolveBlockTag(f.toBlock) : latestNumber;
+				// `blockHash` (EIP-234) pins the query to ONE block. It used to be ignored,
+				// which returned the logs of EVERY block. It excludes a range, as in geth,
+				// and a hash no block has is an error rather than an empty result, so a
+				// typo cannot read as "that block emitted nothing".
+				let from: number;
+				let to: number;
+				if (f.blockHash != null) {
+					if (f.fromBlock != null || f.toBlock != null)
+						throw new RpcError(
+							-32602,
+							'invalid eth_getLogs filter: cannot specify both blockHash and fromBlock/toBlock.',
+						);
+					const n = blockByHash.get(String(f.blockHash).toLowerCase());
+					if (n === undefined)
+						throw new RpcError(
+							-32000,
+							`unknown block: eth_getLogs blockHash ${f.blockHash} is not a block on this node.`,
+						);
+					from = n;
+					to = n;
+				} else {
+					// geth's default for an omitted `fromBlock` is `latest`, not 0; this
+					// node has always defaulted to 0 and that is kept (changing it would
+					// silently shrink every existing consumer's results).
+					from = f.fromBlock != null ? resolveBlockTag(f.fromBlock) : 0;
+					to = f.toBlock != null ? resolveBlockTag(f.toBlock) : latestNumber;
+				}
 				const addrFilter = f.address
 					? (Array.isArray(f.address) ? f.address : [f.address]).map(
 							(a: string) => a.toLowerCase(),
