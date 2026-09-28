@@ -72,8 +72,12 @@ export function keysOfDump(
 			slots.add(`${a.toLowerCase()}:${slot.toLowerCase()}`);
 }
 
-/** Every read of the universe at `block`, keyed `method address[:slot]`. */
-async function readAll(
+/**
+ * Every read of the universe at `block`, keyed `method address[:slot]`.
+ * Exported for ./state-history-persistence.ts, which asks the same questions of
+ * a node before and after a dump / load.
+ */
+export async function readAll(
 	node: SlimNode,
 	addresses: string[],
 	slots: string[],

@@ -57,7 +57,12 @@ test('IndexedDB persistence + eth_getLogs survive a real page reload (revm)', as
 	// 3) read from a fresh revm-backed node that auto-loaded from IndexedDB
 	const r = await h.run({
 		phase: 'read',
-		params: {mode: 'persist-reload', address: write.address},
+		params: {
+			mode: 'persist-reload',
+			address: write.address,
+			pinned: write.pinned,
+			beforeTransfer: write.beforeTransfer,
+		},
 	});
 	console.log(
 		'[revm persist-reload] read:',
@@ -91,6 +96,16 @@ test('IndexedDB persistence + eth_getLogs survive a real page reload (revm)', as
 	expect(read.headMiner).not.toBe('0x0000000000000000000000000000000000000000');
 	expect(read.headMixHash).not.toBe('0x' + '00'.repeat(32));
 	expect(read.logBlockLogsBloom).not.toBe('0x' + '00'.repeat(256));
+
+	// The stateHistory WINDOW survived too: reads pinned below the head answer
+	// after the reload exactly as before it (the undo log is in the dump). The
+	// write side is pinned to literals first, so agreement is not vacuous.
+	expect(write.historical.pinned).toBeLessThan(write.blockNumber);
+	expect(write.historical.numberAtPinned).toBe('1');
+	expect(write.historical.slot0AtPinned).toBe('0x' + '1'.padStart(64, '0'));
+	expect(write.historical.feedBalanceBeforeTransfer).toBe('0x0');
+	expect(write.historical.codeAtGenesis).toBe('0x');
+	expect(read.historical).toEqual(write.historical);
 
 	await h.dispose();
 });

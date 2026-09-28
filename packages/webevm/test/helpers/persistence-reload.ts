@@ -29,6 +29,12 @@
  * value SURVIVED, which is why these are compared write-side against read-side
  * rather than against a literal.
  *
+ * THE HISTORY RIDES ALONG TOO. Both nodes are created with `stateHistory`, and
+ * each reports the same HISTORICAL reads (point reads and an `eth_call` pinned
+ * to blocks below the head), which must agree across the reload: the undo log
+ * is part of the dump IndexedDB holds, so a reloaded page serves the same
+ * window it served before (task `state-history-persistence`).
+ *
  * ENGINE-PARAMETERISED, like the conformance battery and the trusted-sender suite:
  * both phases take an optional engine factory, so the SAME flow runs on the default
  * `@ethereumjs/evm` engine (`persistence-reload.spec.ts`) and on
@@ -85,6 +91,59 @@ const RELOAD_COINBASE = '0x00000000000000000000000000000000dbdbdbdb';
 const RELOAD_PREV_RANDAO =
 	'0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface';
 
+/** Both sides keep this many blocks readable below the head. */
+const HISTORY = {blocks: 16};
+
+/**
+ * Reads pinned BELOW the head, on either side of the reload. `pinned` is the
+ * block of the first increment (number() was 1 then), `beforeTransfer` the
+ * block before the value transfer (XFER_TO held nothing), block 0 predates the
+ * contract (no code).
+ */
+export interface HistoricalFacts {
+	pinned: number;
+	numberAtPinned: string;
+	slot0AtPinned: string;
+	feedBalanceBeforeTransfer: string;
+	codeAtGenesis: string;
+}
+
+async function historicalFacts(
+	node: SlimNode,
+	address: `0x${string}`,
+	pinned: number,
+	beforeTransfer: number,
+): Promise<HistoricalFacts> {
+	const {pub} = clientsFor(node);
+	const at = (n: number) => '0x' + n.toString(16);
+	return {
+		pinned,
+		numberAtPinned: (
+			await pub.readContract({
+				address,
+				abi: counterAbi,
+				functionName: 'number',
+				blockNumber: BigInt(pinned),
+			})
+		).toString(),
+		slot0AtPinned: String(
+			await node.request({
+				method: 'eth_getStorageAt',
+				params: [address, '0x0', at(pinned)],
+			}),
+		),
+		feedBalanceBeforeTransfer: String(
+			await node.request({
+				method: 'eth_getBalance',
+				params: [XFER_TO, at(beforeTransfer)],
+			}),
+		),
+		codeAtGenesis: String(
+			await node.request({method: 'eth_getCode', params: [address, '0x0']}),
+		),
+	};
+}
+
 /** What the RPC says about the header, on either side of the reload. */
 export interface HeaderFacts {
 	headMiner: string;
@@ -124,6 +183,10 @@ function clientsFor(node: SlimNode) {
 }
 
 export interface WriteResult extends HeaderFacts {
+	historical: HistoricalFacts;
+	/** Where the history facts are pinned, for the read phase to ask the same. */
+	pinned: number;
+	beforeTransfer: number;
 	/** Which EVM the node came up on, so a run on the wrong engine is visible. */
 	engineId: string;
 	address: string;
@@ -144,6 +207,7 @@ export async function persistWrite(
 		persistence: createIndexedDBPersistence({db: opts.db ?? DB_NAME}),
 		initialBalances: {[account.address]: 10n ** 24n},
 		blockEnv: {coinbase: RELOAD_COINBASE, prevRandao: RELOAD_PREV_RANDAO},
+		stateHistory: HISTORY,
 		engine: await opts.makeEngine?.(),
 	});
 	const {pub, wallet} = clientsFor(node);
@@ -157,16 +221,19 @@ export async function persistWrite(
 		.contractAddress!;
 
 	// 3 increments (each emits Incremented) + a value transfer.
+	let pinned = 0;
 	for (let i = 0; i < 3; i++) {
 		const h = await wallet.writeContract({
 			address,
 			abi: counterAbi,
 			functionName: 'increment',
 		});
-		await pub.getTransactionReceipt({hash: h});
+		const receipt = await pub.getTransactionReceipt({hash: h});
+		if (i === 0) pinned = Number(receipt.blockNumber);
 	}
 	const xfer = await wallet.sendTransaction({to: XFER_TO, value: 7777n});
-	await pub.getTransactionReceipt({hash: xfer});
+	const beforeTransfer =
+		Number((await pub.getTransactionReceipt({hash: xfer})).blockNumber) - 1;
 
 	const number = (
 		await pub.readContract({address, abi: counterAbi, functionName: 'number'})
@@ -181,9 +248,18 @@ export async function persistWrite(
 	const blockNumber = Number(await pub.getBlockNumber());
 	const engineId = node.engine.id;
 	const header = await headerFacts(node, Number(logs[0]?.blockNumber ?? 0n));
+	const historical = await historicalFacts(
+		node,
+		address,
+		pinned,
+		beforeTransfer,
+	);
 
 	await node.dispose();
 	return {
+		historical,
+		pinned,
+		beforeTransfer,
 		engineId,
 		address,
 		number,
@@ -196,6 +272,8 @@ export async function persistWrite(
 }
 
 export interface ReadResult extends HeaderFacts {
+	/** The same historical reads, answered by the POST-RELOAD node. */
+	historical: HistoricalFacts;
 	/** Which EVM the POST-RELOAD node came up on. */
 	engineId: string;
 	loaded: boolean;
@@ -215,13 +293,19 @@ export interface ReadResult extends HeaderFacts {
 export async function persistRead(
 	address: string,
 	opts: PersistenceOptions = {},
+	pinnedAt: {pinned: number; beforeTransfer: number} = {
+		pinned: 0,
+		beforeTransfer: 0,
+	},
 ): Promise<ReadResult> {
 	const node = await createNode({
 		chainId: CHAIN_ID,
 		miningConfig: {type: 'auto'},
 		persistence: createIndexedDBPersistence({db: opts.db ?? DB_NAME}),
 		// NOTE: no initialBalances and no blockEnv — state AND the block environment
-		// the header reports must come ENTIRELY from IndexedDB.
+		// the header reports must come ENTIRELY from IndexedDB. The same window as
+		// the writer, so every block it served is one this node may serve.
+		stateHistory: HISTORY,
 		engine: await opts.makeEngine?.(),
 	});
 	const {pub} = clientsFor(node);
@@ -276,9 +360,16 @@ export async function persistRead(
 
 	const engineId = node.engine.id;
 	const header = await headerFacts(node, Number(byAddr[0]?.blockNumber ?? 0n));
+	const historical = await historicalFacts(
+		node,
+		address as `0x${string}`,
+		pinnedAt.pinned,
+		pinnedAt.beforeTransfer,
+	);
 	await node.dispose();
 	return {
 		...header,
+		historical,
 		engineId,
 		loaded,
 		number,

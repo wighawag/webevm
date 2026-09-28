@@ -673,6 +673,10 @@ export interface ServedPort {
  * every IndexedDB record in the wild for a format they can still be read as. Bump
  * it when a dump stops being loadable by the code that wrote it, which is the only
  * question `version` can usefully answer.
+ *
+ * The same holds for `history` (2026-09-28, `state-history-persistence`): an
+ * OPTIONAL field, absent from every dump written before it and from every dump
+ * of a node without `stateHistory`, so it is still `version: 1`.
  */
 export interface SerializedState {
 	version: 1;
@@ -689,6 +693,48 @@ export interface SerializedState {
 	receipts: Record<string, SerializedReceipt>;
 	/** Raw tx + meta keyed by tx hash (for eth_getTransactionByHash). */
 	transactions: Record<string, SerializedTx>;
+	/**
+	 * The `stateHistory` UNDO LOG, oldest first: one record per retained block,
+	 * holding the value every key that block changed had at the END of the block
+	 * before it (ADR 0013). Written only by a node created with `stateHistory`
+	 * (possibly empty), and read only by one: a node without the option ignores it.
+	 *
+	 * OPTIONAL, and absent means "no history": a dump written before this field
+	 * existed loads with history starting at its head, as it always did. A dump
+	 * carrying more blocks than the loading node's window is truncated to that
+	 * window; one carrying fewer serves what it has. `loadState` restores the
+	 * CONTIGUOUS run of records ending at the dump's head block and drops anything
+	 * older than a gap, since a read below a gap would be answered from a later
+	 * state than the one asked for.
+	 */
+	history?: SerializedHistoryBlock[];
+}
+
+/**
+ * One block's undo record in {@link SerializedState.history}, hex-encoded like
+ * the rest of the dump. Every map is keyed by `0x` lowercase hex (addresses of
+ * 20 bytes, slots of 32), and `null` means the key was ABSENT at the end of the
+ * block before (`number - 1`): no account, no code, an unset slot. That is not
+ * the same as an empty value, and a loader must not conflate them: an absent
+ * account reads as absent (EXTCODEHASH zero), an existing empty one does not.
+ */
+export interface SerializedHistoryBlock {
+	/** The block this record undoes: its keys' values are the ones before it. */
+	number: number;
+	/** Account RLP (as in {@link SerializedState.accounts}), or `null` if absent. */
+	accounts: Record<string, string | null>;
+	/** Code hex, or `null` if the address had none. */
+	code: Record<string, string | null>;
+	/** Address -> (slot -> value hex, or `null` if the slot was unset). */
+	storage: Record<string, Record<string, string | null>>;
+	/**
+	 * Addresses whose storage the block CLEARED (creation over storage,
+	 * `SELFDESTRUCT`, EIP-161 removal). The clear also recorded every slot the
+	 * account held in `storage`, so this marker restores no value on its own: it
+	 * tells a historical `eth_call` to clear the account's live storage before
+	 * applying those slots, dropping the ones written since.
+	 */
+	storageCleared: string[];
 }
 
 export interface SerializedBlock {
