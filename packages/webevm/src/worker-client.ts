@@ -11,6 +11,9 @@ import {wrap, proxy, transfer, releaseProxy, type Remote} from 'comlink';
 // own `exposeNode({createEngine})` module. Type-only, so nothing is imported at
 // runtime and no `expose()` side effect is dragged onto the main thread.
 import type {NodeWorkerApi} from './worker-host.js';
+// ...and the ONE runtime import besides comlink: rebuilding an `RpcError` the
+// worker sent, which comlink alone would deliver without its `code` and `data`.
+import {receivingRpcErrors} from './worker-rpc-error.js';
 import type {
 	NodeOptions,
 	SlimNode,
@@ -86,15 +89,22 @@ export async function createWorkerNode(
 	const senderMode = await remote.senderMode;
 	const engineInfo = await remote.engine;
 
+	// EVERY ASYNC METHOD IS WRAPPED IN `receivingRpcErrors`, the other half of the
+	// host proxy's `sendingRpcErrors`: an `RpcError` the node raises reaches the
+	// caller as a real `RpcError` with its `code` and `data`, the same error a
+	// main-thread node rejects with (./worker-rpc-error.ts). Any other error is
+	// comlink's, unchanged.
 	return {
-		request: (args: RequestArguments) => remote.request(args),
-		mine: () => remote.mine(),
-		dumpState: () => remote.dumpState(),
-		loadState: (s: SerializedState) => remote.loadState(s),
+		request: receivingRpcErrors((args: RequestArguments) =>
+			remote.request(args),
+		),
+		mine: receivingRpcErrors(() => remote.mine()),
+		dumpState: receivingRpcErrors(() => remote.dumpState()),
+		loadState: receivingRpcErrors((s: SerializedState) => remote.loadState(s)),
 		computeStateRoot,
 		senderMode,
 		engine: engineInfo,
-		getStateRoot: () => remote.getStateRoot(),
+		getStateRoot: receivingRpcErrors(() => remote.getStateRoot()),
 		onNewHead(cb) {
 			// The callback must cross the thread boundary as a comlink proxy.
 			let unsub: (() => void) | undefined;
@@ -105,7 +115,7 @@ export async function createWorkerNode(
 				void unsub?.();
 			};
 		},
-		async serveOn(port: MessagePort) {
+		serveOn: receivingRpcErrors(async (port: MessagePort) => {
 			// TRANSFERRED, never cloned: a MessagePort cannot be cloned at all, and the
 			// point is that the port now belongs to the node's worker, so a consumer
 			// holding the other end reaches that worker without this thread in between.
@@ -122,12 +132,12 @@ export async function createWorkerNode(
 					served[releaseProxy]();
 				},
 			};
-		},
+		}),
 		// Terminating the worker also ends every port it was serving: a consumer's
 		// requests then get no answer, as they would from a stopped port.
-		async dispose() {
+		dispose: receivingRpcErrors(async () => {
 			await remote.dispose();
 			worker.terminate();
-		},
+		}),
 	};
 }
