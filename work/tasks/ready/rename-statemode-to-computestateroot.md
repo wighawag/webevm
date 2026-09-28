@@ -6,6 +6,8 @@ blockedBy: [trie-derived-from-the-flat-state]
 covers: [1]
 ---
 
+> FORWARD-POINTER (conductor, 2026-09-28): the gate's `pnpm test` includes `packages/benchmarks`, whose `bundle size per backend` test pins the default entry's size (`DEFAULT_ENTRY_BASELINE` in `packages/benchmarks/test/evm.spec.ts`). Any growth in `packages/webevm/src` core fails it. If your change grows the core bundle, re-pin it in the same change after `pnpm build`, with a history entry at the top of the RE-PINNED list saying what grew and why, as `state-change-set-capture` and `state-history-point-reads` did. Run the FULL verify (`pnpm format:check && pnpm build && pnpm test`), not only the webevm suite.
+
 ## What to build
 
 Once every node runs on the flat state, `stateMode: 'none' | 'trie'` no longer names a mode; it names whether a root is computed. Replace it with `computeStateRoot: boolean` (default `false`). Decided with the user: the package has no users, so this is a BREAKING change with NO compatibility alias. (`stateRoot: true` was rejected: an option named `stateRoot` reads as "pass a root".)

@@ -6,6 +6,8 @@ blockedBy: [state-change-set-capture, state-history-persistence, state-history-d
 covers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
 ---
 
+> FORWARD-POINTER (conductor, 2026-09-28): the gate's `pnpm test` includes `packages/benchmarks`, whose `bundle size per backend` test pins the default entry's size (`DEFAULT_ENTRY_BASELINE` in `packages/benchmarks/test/evm.spec.ts`). Any growth in `packages/webevm/src` core fails it. If your change grows the core bundle, re-pin it in the same change after `pnpm build`, with a history entry at the top of the RE-PINNED list saying what grew and why, as `state-change-set-capture` and `state-history-point-reads` did. Run the FULL verify (`pnpm format:check && pnpm build && pnpm test`), not only the webevm suite.
+
 ## What to build
 
 Make `stateMode:'trie'` mean "the same flat state as every node, plus a Merkle-Patricia trie derived from it". The name stays `stateMode:'trie'` in this task; `rename-statemode-to-computestateroot` renames it afterwards.
