@@ -25,14 +25,23 @@ export function assertStorageCollisions(c: Record<string, any>, label: string) {
 		expect(m.storageInner.create2Returned, where('storageInner')).toBe(
 			'target',
 		);
-		// NONCE: refused everywhere. A top-level collision consumes all the gas; an
-		// inner one fails the CREATE2 (which returns 0) inside a successful call.
-		expect(m.nonceTop.verdict, where('nonceTop')).toBe('collision');
-		expect(m.nonceTop.status, where('nonceTop')).toBe('reverted');
-		expect(m.nonceTop.gasUsed, where('nonceTop')).toBe('300000');
-		expect(m.nonceInner.verdict, where('nonceInner')).toBe('collision');
-		expect(m.nonceInner.status, where('nonceInner')).toBe('success');
-		expect(m.nonceInner.create2Returned, where('nonceInner')).toBe('0');
+		// NONCE and CODE: refused everywhere. A top-level collision consumes all
+		// the gas; an inner one fails the CREATE2 (which returns 0) inside a
+		// successful call. The target keeps what it had.
+		for (const kind of ['nonce', 'code'] as const) {
+			const top = `${kind}Top`;
+			const inner = `${kind}Inner`;
+			expect(m[top].verdict, where(top)).toBe('collision');
+			expect(m[top].status, where(top)).toBe('reverted');
+			expect(m[top].gasUsed, where(top)).toBe('300000');
+			expect(m[inner].verdict, where(inner)).toBe('collision');
+			expect(m[inner].status, where(inner)).toBe('success');
+			expect(m[inner].create2Returned, where(inner)).toBe('0');
+		}
+		for (const k of ['codeTop', 'codeInner']) {
+			expect(m[k].targetCode, where(k)).toBe('0x43');
+			expect(m[k].targetNonce, where(k)).toBe('0x0');
+		}
 		// EMPTY: created.
 		expect(m.emptyTop.verdict, where('emptyTop')).toBe('created');
 		expect(m.emptyInner.verdict, where('emptyInner')).toBe('created');
@@ -60,6 +69,9 @@ export function assertStorageCollisions(c: Record<string, any>, label: string) {
 		c.trie.emptyInner.root,
 	);
 	expect(c.trie.nonceTop.root, `${label} root nonce`).not.toBe(
+		c.trie.emptyTop.root,
+	);
+	expect(c.trie.codeTop.root, `${label} root code`).not.toBe(
 		c.trie.emptyTop.root,
 	);
 }

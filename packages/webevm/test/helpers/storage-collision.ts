@@ -14,8 +14,8 @@
  *   `MerkleStateManager`, whose `storageRoot` was real).
  *
  * The cases are the spike's (`docs/spikes/revm-eip-7610-storage-collision/`):
- * the target always exists with 1 wei, so `storage`, `nonce` and `empty` differ
- * in exactly one field; "Top" is a deployment transaction and "Inner" a CREATE2
+ * the target always exists with 1 wei, so `storage`, `nonce`, `code` and
+ * `empty` differ in exactly one field; "Top" is a deployment transaction and "Inner" a CREATE2
  * from a factory that stores what CREATE2 returned in its slot 0. Init code
  * deploys the single byte `0x42`, so "created" is code `0x42` at the target.
  *
@@ -48,6 +48,8 @@ const INIT = '0x604260005360016000f3';
  * slot 0 is the created address, or 0 when the creation collided.
  */
 const FACTORY_CODE = '0x365f5f375f365f5ff55f5500';
+/** The pre-existing code of the `code*` targets: anything but `0x42`. */
+const CODE = '0x43';
 const FACTORY = '0x00000000000000000000000000000000000fac70';
 const SLOT = '0x7';
 const WORD7 = '0x' + '00'.repeat(31) + '07';
@@ -57,6 +59,8 @@ export const COLLISION_CASES = [
 	'storageInner',
 	'nonceTop',
 	'nonceInner',
+	'codeTop',
+	'codeInner',
 	'emptyTop',
 	'emptyInner',
 ] as const;
@@ -116,6 +120,9 @@ async function runCase(
 	if (name.startsWith('storage'))
 		await rq('evm_setStorageAt', [target, SLOT, WORD7]);
 	if (name.startsWith('nonce')) await rq('evm_setNonce', [target, '0x1']);
+	// Nonce 0, no storage, non-empty code (`0x43`, not the `0x42` a creation
+	// would deploy, so "created" stays distinguishable from "left alone").
+	if (name.startsWith('code')) await rq('evm_setCode', [target, CODE]);
 
 	const hash = await wallet.sendTransaction(
 		inner

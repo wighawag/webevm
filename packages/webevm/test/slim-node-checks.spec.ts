@@ -143,7 +143,9 @@ test('node honesty + correctness (receipts, gaps, persistence, state-root mode)'
 	// target is not a collision, so creation proceeds and the storage is CLEARED.
 	// 'trie' used to REJECT it (MerkleStateManager's real storageRoot); it now runs
 	// on the same flat state as 'none' (ADR 0014), so the modes agree. The nonce
-	// and code collisions are still refused everywhere: the storage-collision cases of trie-derived.spec.ts.
+	// and code collisions are still refused everywhere, in both modes and on both
+	// engines: the nonce* and code* cases of helpers/storage-collision.ts, asserted
+	// by trie-derived.spec.ts and revm-trie-derived.spec.ts.
 	for (const mode of ['none', 'trie'] as const) {
 		expect(c[`deployStatus.${mode}`], mode).toBe('success');
 		expect(c[`deployLandedOnTarget.${mode}`], mode).toBe(true);
