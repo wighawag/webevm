@@ -8,6 +8,8 @@ covers: [19, 20]
 
 > FORWARD-POINTER (conductor, 2026-09-28): the gate's `pnpm test` includes `packages/benchmarks`, whose `bundle size per backend` test pins the default entry's size (`DEFAULT_ENTRY_BASELINE` in `packages/benchmarks/test/evm.spec.ts`). Any growth in `packages/webevm/src` core fails it. If your change grows the core bundle, re-pin it in the same change after `pnpm build`, with a history entry at the top of the RE-PINNED list saying what grew and why, as `state-change-set-capture` and `state-history-point-reads` did. Run the FULL verify (`pnpm format:check && pnpm build && pnpm test`), not only the webevm suite.
 
+> FORWARD-POINTER (conductor, 2026-09-28): `state-history-point-reads` and `historical-eth-call` deliberately shipped NO changeset and deferred it here (see `work/notes/observations/state-history-point-reads-decisions.md` decision 1 and `historical-eth-call-decisions.md` decision 10). So this task's ONE `minor` changeset must describe the whole feature: the `stateHistory` option, point reads in the window, AND `eth_call` / `eth_estimateGas` executing at a block in the window, plus persistence through `dumpState`/`loadState`. An unreleased `.changeset/pinned-reads-refuse-history.md` already says reads below the head are refused. Make the two read consistently: the refusal is now the default without `stateHistory`, and beyond the window with it. `historical-eth-call` renamed `requireHeadState` to `historicalBlock` and pointed the README's one reference at it; the README section you rewrite should point there too.
+
 ## What to build
 
 Close out the feature for consumers.
