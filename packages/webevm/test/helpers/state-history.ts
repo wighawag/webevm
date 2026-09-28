@@ -18,8 +18,8 @@
  * THE KEY UNIVERSE COMES FROM A FIRST RUN of the same (deterministic) chain on a
  * separate node: the keys a block touches are not known until it has run, and a
  * snapshot of block 3 must already contain a slot block 7 is the first to write.
- * The two runs are asserted to end in the same `dumpState`, so the universe is
- * the second run's too.
+ * The two runs are asserted to end in the same state (`dumpState` less the
+ * wall-clock-derived block hashes), so the universe is the second run's too.
  *
  * THE CHAIN IS `runChangeSetChain` of ./change-set.ts, the same write routes the
  * change-set differential covers (transfers, creation over storage, nested
@@ -114,6 +114,25 @@ function diff(
 	return out;
 }
 
+/**
+ * The part of a `dumpState` two runs of the same chain must agree on: the
+ * state (accounts, code, storage), the history and the block count. Block
+ * HASHES are left out, and with them the headers, receipts and transactions
+ * that carry them: genesis is stamped with the wall clock in whole seconds, so
+ * two nodes created either side of a second boundary hash every block
+ * differently while holding identical state. Comparing the whole dump made the
+ * determinism check flaky under load (both runs straddling a tick).
+ */
+function stateOfDump(dump: Awaited<ReturnType<SlimNode['dumpState']>>) {
+	return JSON.stringify({
+		accounts: dump.accounts,
+		code: dump.code,
+		storage: dump.storage,
+		history: dump.history,
+		blocks: dump.blocks.length,
+	});
+}
+
 // ------------------------------------------------------ the differential ----
 
 async function runDifferential(makeEngine: EngineFactory | undefined) {
@@ -132,7 +151,7 @@ async function runDifferential(makeEngine: EngineFactory | undefined) {
 	// Slots the chain writes that a dump may never hold (written and cleared in
 	// one block), and slot 0 of every address, which most of them use.
 	for (const a of addressSet) slotSet.add(`${a}:${word(0)}`);
-	const scoutDump = JSON.stringify(await scout.dumpState());
+	const scoutDump = stateOfDump(await scout.dumpState());
 	await scout.dispose();
 	const addresses = [...addressSet].sort();
 	const slots = [...slotSet].sort();
@@ -153,7 +172,7 @@ async function runDifferential(makeEngine: EngineFactory | undefined) {
 	const chain = await runChangeSetChain(node, async (_label, n) =>
 		takeSnapshot(n),
 	);
-	const deterministic = JSON.stringify(await node.dumpState()) === scoutDump;
+	const deterministic = stateOfDump(await node.dumpState()) === scoutDump;
 	const head = Number(
 		BigInt(String(await node.request({method: 'eth_blockNumber'}))),
 	);
