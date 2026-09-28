@@ -560,7 +560,10 @@ export interface NodeOptions {
 	 * (and the head) exactly as they answered when that block was the head. A
 	 * block older than `head - N` is refused with `-32000 historical state not
 	 * available`, naming the oldest block it can serve. `eth_call` and
-	 * `eth_estimateGas` are still served at the head only.
+	 * `eth_estimateGas` pinned to a block in the window EXECUTE at it: against
+	 * its state and its block environment, with state overrides on top. The
+	 * history is carried by `dumpState` / `loadState` (so IndexedDB persistence
+	 * keeps the window across a reload).
 	 *
 	 * ABSENT MEANS OFF, and there is no default window: a node without it behaves
 	 * exactly as before (the head is served, anything below it refused) and pays
@@ -570,6 +573,10 @@ export interface NodeOptions {
 	 * THE COST is memory per changed key per retained block: the node keeps, for
 	 * each of the last N blocks, the value every account, code entry and storage
 	 * slot the block changed had before it (an undo log over the one flat state).
+	 * Measured: about 300 bytes per changed key per retained block, and a
+	 * historical `eth_call` costs about 0.8 microseconds per distinct key changed
+	 * since the block it is pinned to; the README's "What it costs" section has a
+	 * sizing example, from `docs/spikes/bounded-state-history-cost/results.md`.
 	 * See `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`.
 	 */
 	stateHistory?: StateHistoryOptions;
