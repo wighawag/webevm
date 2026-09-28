@@ -79,6 +79,9 @@
  *                            `MessagePort` (`node.serveOn(port)`), worker-hosted
  *                            and main-thread alike, answering a consumer in
  *                            ANOTHER worker with the page relaying nothing
+ *   - 'state-history-transports': with `stateHistory`, historical reads through
+ *                            a worker-hosted node and over `serveOn` ports
+ *                            answer exactly as `node.request` does
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -112,6 +115,7 @@ import {
 } from './state-history.js';
 import {runHistoricalCallChecks} from './historical-call.js';
 import {runStateHistoryPersistenceChecks} from './state-history-persistence.js';
+import {runStateHistoryTransportChecks} from './state-history-transports.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -438,6 +442,19 @@ const cut: CodeUnderTest = {
 				const workerUrl = String(ctx.params.workerUrl);
 				results.worker = await serveOnPortFromWorker(workerUrl);
 				results.mainThread = await serveOnPortFromMainThread(workerUrl);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// state-history-transports: historical reads through a worker-hosted node
+		// and over served ports answer exactly as `node.request` does.
+		if (ctx.params.mode === 'state-history-transports') {
+			try {
+				results.transports = await runStateHistoryTransportChecks(
+					String(ctx.params.workerUrl),
+				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
