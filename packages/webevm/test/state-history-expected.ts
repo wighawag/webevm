@@ -67,12 +67,10 @@ export function assertStateHistory(c: Record<string, any>, label: string) {
 	expectRefusedBeyond(win.atHead7.beyond, 7 - n, 'head 7 beyond', label);
 	for (const [what, o] of Object.entries(win.beyondByMethod))
 		expectRefusedBeyond(o, 7 - n, `beyond by ${what}`, label);
-	// eth_call / eth_estimateGas are still served at the head only, and say so.
-	for (const o of [win.callInWindow, win.estimateInWindow]) {
-		expect(o, label).toMatchObject({code: -32000});
-		expect(o.message, label).toContain(HISTORICAL);
-		expect(o.message, label).toContain('head only');
-	}
+	// eth_call / eth_estimateGas inside the window are served (X has no code: an
+	// empty return, and a plain transfer's 21000).
+	expect(win.callInWindow, label).toEqual({ok: '0x'});
+	expect(win.estimateInWindow, label).toEqual({ok: '0x5208'});
 	expect(win.callAtHead, label).toHaveProperty('ok');
 
 	// ---- MEMORY: exactly N sealed records, the N newest ----

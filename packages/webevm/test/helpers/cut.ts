@@ -37,6 +37,11 @@
  *                            block did (a snapshot differential over the
  *                            change-set chain), beyond it they are refused, and
  *                            exactly N records are kept. ENGINE-PARAMETERISED
+ *   - 'historical-call'    : with `stateHistory`, eth_call / eth_estimateGas at
+ *                            a block K in the window execute against K's state
+ *                            and block environment (consumer shape, BLOCKHASH,
+ *                            reconstruction, overrides on top, purity, and an
+ *                            execution differential). ENGINE-PARAMETERISED
  *   - 'rpc-params'         : parameters that used to be IGNORED are honoured or
  *                            refused: eth_call/eth_estimateGas state overrides
  *                            (in 'none' AND 'trie' mode), eth_getLogs blockHash,
@@ -101,6 +106,7 @@ import {
 	runStateHistoryChecks,
 	runStateHistoryConstructionChecks,
 } from './state-history.js';
+import {runHistoricalCallChecks} from './historical-call.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -233,6 +239,16 @@ const cut: CodeUnderTest = {
 					battery: await runStateHistoryChecks(),
 					construction: await runStateHistoryConstructionChecks(),
 				};
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// historical-call: eth_call / eth_estimateGas at a past block in the window.
+		if (ctx.params.mode === 'historical-call') {
+			try {
+				results.historicalCall = await runHistoricalCallChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

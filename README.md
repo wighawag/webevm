@@ -272,7 +272,7 @@ This node keeps **one** state, the one at its head. It does not keep state per b
 - **Refused, `-32000 header not found`:** a block above the head, or a hash no block has (geth's wording).
 - **Refused, `-32602`:** a block parameter that is not a block reference.
 
-A real archive node would answer a read below the head from that block's state. This node **refuses loudly instead**. Up to and including 0.7.0 it ignored the parameter and answered from the head, which was silently wrong: a client that pins `eth_getLogs` and `eth_call` to the same block, so the two describe one moment, got logs as of that block and storage as of a later one. Blocks, receipts and logs are **not** affected; `eth_getBlockByNumber` and `eth_getLogs` work at any height. The reasoning (why history is not retained, even in `'trie'` mode) is at `requireHeadState` in `src/node.ts`.
+A real archive node would answer a read below the head from that block's state. This node **refuses loudly instead**. Up to and including 0.7.0 it ignored the parameter and answered from the head, which was silently wrong: a client that pins `eth_getLogs` and `eth_call` to the same block, so the two describe one moment, got logs as of that block and storage as of a later one. Blocks, receipts and logs are **not** affected; `eth_getBlockByNumber` and `eth_getLogs` work at any height. The reasoning (why history is not retained, even in `'trie'` mode) is at `historicalBlock` in `src/node.ts`.
 
 ## State mode: `'none'` (fast, default) vs `'trie'` (real state root, opt-in)
 

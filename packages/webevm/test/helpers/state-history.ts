@@ -56,8 +56,11 @@ async function outcome(
 	}
 }
 
-/** Every key of a `dumpState`, as `address` and `address:slot`. */
-function keysOfDump(
+/**
+ * Every key of a `dumpState`, as `address` and `address:slot`. Exported for
+ * ./historical-call.ts, which builds the same key universe.
+ */
+export function keysOfDump(
 	dump: Awaited<ReturnType<SlimNode['dumpState']>>,
 	addresses: Set<string>,
 	slots: Set<string>,
@@ -324,8 +327,12 @@ async function runWindow(makeEngine: EngineFactory | undefined) {
 		storage: await outcome(node, 'eth_getStorageAt', [X, '0x0', '0x2']),
 		nonce: await outcome(node, 'eth_getTransactionCount', [X, '0x2']),
 		earliest: await outcome(node, 'eth_getBalance', [X, 'earliest']),
+		// The executing reads are gated by the same window.
+		call: await outcome(node, 'eth_call', [{to: X}, '0x2']),
+		estimateGas: await outcome(node, 'eth_estimateGas', [{to: X}, '0x2']),
 	};
-	// eth_call / eth_estimateGas below the head stay REFUSED, even in the window.
+	// eth_call / eth_estimateGas inside the window are SERVED (at that block; see
+	// ./historical-call.ts for what they see there).
 	const callInWindow = await outcome(node, 'eth_call', [{to: X}, '0x6']);
 	const estimateInWindow = await outcome(node, 'eth_estimateGas', [
 		{to: X},

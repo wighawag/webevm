@@ -90,7 +90,18 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED SIXTEEN TIMES SINCE. Most recent first:
+ * RE-PINNED SEVENTEEN TIMES SINCE. Most recent first:
+ *
+ * 439.2 -> 439.9 KB raw / 132.3 -> 132.5 KB gzip, by `historical-eth-call`:
+ * with `stateHistory`, `eth_call` and `eth_estimateGas` at a block K in the
+ * window EXECUTE against K's state and block environment. The 0.7 KB is in
+ * `src/node.ts`: `historicalEntries` (the earliest-wins union of the undo log
+ * after K, as state entries), the override path split into
+ * `parseStateOverrides` / `withStateEntries` / `applyStateEntry` so both paths
+ * share one apply step, and the block threaded through `evmCall` and
+ * `estimateGas`. In the CORE graph for the same reason as the option itself;
+ * a node without `stateHistory` never builds an entry. Still zero bytes of
+ * `revm-wasm`.
  *
  * 436.3 -> 439.2 KB raw / 131.4 -> 132.3 KB gzip, by `state-history-point-reads`:
  * the opt-in `stateHistory: {blocks: N}` option, which serves `eth_getBalance`,
@@ -376,7 +387,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 439.2, gzipKB: 132.3};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 439.9, gzipKB: 132.5};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
