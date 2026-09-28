@@ -92,6 +92,29 @@ const collected: Record<string, unknown>[] = [];
  *
  * RE-PINNED SIXTEEN TIMES SINCE. Most recent first:
  *
+ * 432.0 -> 436.3 KB raw / 130.3 -> 131.4 KB gzip, by `state-change-set-capture`:
+ * the node can record a per-block CHANGE SET (every account, code entry and
+ * storage slot a block changed, with its value at the end of the block before),
+ * the seam bounded state history and trie-from-flat-state stand on. The 4.3 KB is
+ * in `src/state-manager.ts` (the per-checkpoint-level record, its commit merge,
+ * the synchronous `setAccountAt` / `setCodeAt` / `removeAccountAt` writers revm
+ * now commits through, the restated `putCode` / `modifyAccountFields` and the
+ * bottom-level `getAccount` copy) and the few lines in `src/node.ts` that take the
+ * record per block and clear it for baselines. It is in the CORE graph because
+ * this IS the default state manager for `stateMode:'none'`; recording is off by
+ * default and costs a JS-only consumer nothing at run time
+ * (`docs/spikes/state-change-set-capture/measurements.md`). Still zero bytes of
+ * `revm-wasm`.
+ *
+ * 426.2 -> 432.0 KB raw / 128.6 -> 130.3 KB gzip, NOT RE-PINNED WHEN IT LANDED:
+ * `8c2cb50` (block-pinned state reads and the request parameters the node used
+ * to ignore: `requireHeadState`, `withStateOverrides`, the `eth_getLogs`
+ * `blockHash` and `eth_feeHistory` `newestBlock` handling, and their refusals'
+ * prose) grew the entry and left this test red on `main`. Measured and recorded
+ * here by `state-change-set-capture`, which had to re-pin for its own growth
+ * above and could not do so without absorbing this; see
+ * `work/notes/observations/2026-09-28-bundle-size-pin-left-red-by-8c2cb50.md`.
+ *
  * 424.8 -> 426.2 KB raw / 128.1 -> 128.6 KB gzip, by
  * `a-worker-node-serves-eip-1193-on-a-handed-port`: a node can SERVE its
  * EIP-1193 `request` on a `MessagePort` it is handed (`node.serveOn(port)`), so a
@@ -341,7 +364,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 426.2, gzipKB: 128.6};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 436.3, gzipKB: 131.4};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

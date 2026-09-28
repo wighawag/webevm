@@ -108,9 +108,51 @@
  * pre-EIP-7610 semantics and what the EVM's own call asks for. Both are far
  * better than silently inheriting; they are not identical to each other, and that
  * asymmetry is documented in the README's state-mode section.
+ *
+ * ## The per-block CHANGE SET (the open record), and why it lives HERE
+ *
+ * When switched on ({@link OverlayStorageStateManager.enableChangeSets}, an
+ * INTERNAL switch the node flips; no option exposes it yet), this class keeps
+ * the OPEN RECORD: every account, code entry and storage slot changed since the
+ * record was last taken, with the value each had when it was (FIRST WRITE WINS),
+ * plus a per-account "storage was cleared" marker. The node takes it at the end
+ * of each mined block, so it names what that block (and any `evm_set*` cheat
+ * issued before it) changed, and the value at the end of the previous block. It
+ * is the seam bounded state history (an undo log) and trie-from-flat-state (the
+ * keys to rehash) both stand on: `work/specs/tasked/bounded-state-history.md`.
+ *
+ * IT IS HERE, IN ONE PLACE, because every write reaches this class: the default
+ * engine's through the async `StateManagerInterface` methods overridden below,
+ * revm's through the SYNCHRONOUS by-key methods ({@link setAccountAt},
+ * {@link setCodeAt}, {@link removeAccountAt}, {@link setStorageAt},
+ * {@link clearStorageAt}) that `src/revm-state-store.ts` is required to call
+ * instead of writing the maps itself. The async writers are thin wrappers over
+ * the same by-key methods, so there is ONE recording path per key kind.
+ *
+ * CHECKPOINT-AWARE, the same way the storage overlays are. A record is kept PER
+ * CHECKPOINT LEVEL (lazily: a level with no write allocates nothing), holding the
+ * value each key had at the START of that level, which is its value in the level
+ * BELOW (frozen while this one is open, so reading it at first-write time is the
+ * same as reading it at checkpoint time). `commit()` merges the top record into
+ * the one below with the BELOW entry winning (it is older), `revert()` drops it.
+ * So a write inside a reverted frame, a reverted transaction's inner writes, and
+ * every `eth_call` / `eth_estimateGas` / state override leave no trace, by
+ * construction rather than by bookkeeping. Pure reads additionally SUSPEND
+ * recording ({@link withChangeSetsSuspended}) because their levels are always
+ * reverted: a cost rule, not a correctness one.
+ *
+ * THE PRIOR IS READ FROM THE LEVEL BELOW, NOT FROM THE LEVEL BEING WRITTEN, and
+ * that is what makes it immune to an in-place mutation inside a checkpoint
+ * (`@ethereumjs/vm` mutates the `Account` object it got and then `putAccount`s
+ * it). At the BOTTOM level there is no level below, so the prior is the map's
+ * current value, and {@link getAccount} hands out a COPY there so that no caller
+ * can mutate it before the write arrives. See {@link getAccount} for the
+ * decision and its measured cost.
  */
 import {SimpleStateManager} from '@ethereumjs/statemanager';
-import type {Address} from '@ethereumjs/util';
+import type {AccountFields} from '@ethereumjs/common';
+import {Account, type Address} from '@ethereumjs/util';
+import {keccak_256} from '@noble/hashes/sha3.js';
 import {
 	packAddressKey,
 	packSlotKey,
@@ -155,6 +197,63 @@ function emptyOverlay(): StorageOverlay {
 	return {written: new Map(), cleared: new Set()};
 }
 
+/**
+ * THE PER-BLOCK CHANGE SET: for every key changed since the record was opened,
+ * the value it had THEN (`undefined` = absent). See the header's change-set
+ * section.
+ *
+ * Keys are the representation's own: accounts and code by `address.toString()`
+ * (the upstream stacks' key), storage by PACKED key (the overlays' key).
+ */
+export interface ChangeSet {
+	/** Account (whole) before the first change, `undefined` if it was absent. */
+	readonly accounts: Map<string, Account | undefined>;
+	/** Code by address before the first change, `undefined` if there was none. */
+	readonly code: Map<string, Uint8Array | undefined>;
+	/** Slot values before the first change, `undefined` if the slot was unset. */
+	readonly storage: Map<
+		PackedAddressKey,
+		Map<PackedSlotKey, Uint8Array | undefined>
+	>;
+	/**
+	 * Accounts whose storage was CLEARED (creation over storage, `SELFDESTRUCT`,
+	 * EIP-161 removal). A clear also records every slot the account held, so this
+	 * marker is not needed to restore a value; it tells a consumer that the
+	 * account's WHOLE storage changed (a trie must rebuild it).
+	 */
+	readonly storageCleared: Set<PackedAddressKey>;
+}
+
+function emptyChangeSet(): ChangeSet {
+	return {
+		accounts: new Map(),
+		code: new Map(),
+		storage: new Map(),
+		storageCleared: new Set(),
+	};
+}
+
+/** `true` when the change set records nothing. */
+export function isEmptyChangeSet(cs: ChangeSet): boolean {
+	return (
+		cs.accounts.size === 0 &&
+		cs.code.size === 0 &&
+		cs.storage.size === 0 &&
+		cs.storageCleared.size === 0
+	);
+}
+
+/**
+ * A copy of an `Account` that shares no mutable state with it: the same trick
+ * `checkpointSync()` uses (upstream's, kept byte for byte), which copies the
+ * instance's own fields onto a fresh object of the same prototype. The fields are
+ * bigints and `Uint8Array`s that are REPLACED rather than mutated, so a shallow
+ * copy is independent.
+ */
+function copyAccount(account: Account): Account {
+	return Object.assign(Object.create(Object.getPrototypeOf(account)), account);
+}
+
 const STORAGE_STACK_IS_GONE =
 	"webevm: SimpleStateManager's flat `storageStack` is not maintained " +
 	"by this node. `stateMode:'none'` storage is per-account with per-checkpoint " +
@@ -180,6 +279,17 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * NO INITIALISER — see the header's field-initialiser trap.
 	 */
 	declare storageOverlays: StorageOverlay[];
+
+	/**
+	 * The change set PER CHECKPOINT LEVEL, parallel to `accountStack` (index 0 is
+	 * the OPEN RECORD). `undefined` as a whole means recording is OFF, which is the
+	 * default and costs nothing; an `undefined` entry means that level has written
+	 * nothing yet. NO INITIALISER, for the header's field-initialiser trap: the
+	 * base constructor's `checkpointSync()` runs before any field would.
+	 */
+	declare private changeLevels: (ChangeSet | undefined)[] | undefined;
+	/** > 0 while a pure read runs: see {@link withChangeSetsSuspended}. */
+	declare private changeSetsSuspended: number | undefined;
 
 	constructor(opts?: ConstructorParameters<typeof SimpleStateManager>[0]) {
 		super(opts);
@@ -220,6 +330,9 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 		}
 		this.accountStack.push(newTopA);
 		this.codeStack.push(new Map(this.topCodeStack()));
+		// A new level records nothing until it writes (lazy), so a frame that only
+		// reads allocates nothing here.
+		this.changeLevels?.push(undefined);
 		// First call comes from the BASE constructor, before any subclass field
 		// could have run. `as ... | undefined` because the declared type says it is
 		// always there, and at this one instant it is not.
@@ -253,6 +366,8 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * {@link clearStorageAt}, with no checkpoint open), rather than swept later.
 	 */
 	override async commit(): Promise<void> {
+		// Refused BEFORE anything moves, so a refusal leaves the stacks as they were.
+		this.refuseCommitIntoBottomWhileSuspended();
 		this.accountStack.splice(-2, 1);
 		this.codeStack.splice(-2, 1);
 		const overlays = this.storageOverlays;
@@ -267,6 +382,7 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 		// After the `pop()` below, `below` is the bottom overlay exactly when the
 		// stack is two deep now.
 		const belowIsBottom = overlays.length === 2;
+		this.mergeChangeLevelDown();
 		for (const address of top.cleared) {
 			below.written.delete(address);
 			if (!belowIsBottom) below.cleared.add(address);
@@ -288,6 +404,335 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 		this.accountStack.pop();
 		this.codeStack.pop();
 		this.storageOverlays.pop();
+		// ...and the change set it recorded goes with it: a reverted write was never
+		// a change.
+		this.changeLevels?.pop();
+	}
+
+	// --- the change set (the open record) -------------------------------------
+
+	/**
+	 * Switch change-set recording ON. INTERNAL: called by the node when a feature
+	 * that consumes change sets is on (bounded state history, trie-from-flat-state);
+	 * no option exposes it directly. Only with no checkpoint open, so the level
+	 * array starts parallel to the stacks.
+	 */
+	enableChangeSets(): void {
+		if (this.accountStack.length !== 1)
+			throw new Error(
+				'webevm: change sets can only be switched on with no checkpoint open.',
+			);
+		this.changeLevels ??= [emptyChangeSet()];
+	}
+
+	/** Whether {@link enableChangeSets} was called. */
+	get recordsChangeSets(): boolean {
+		return this.changeLevels !== undefined;
+	}
+
+	/**
+	 * The OPEN RECORD as it stands, without taking it. `undefined` when recording
+	 * is off. Read-only by contract: the node's test-only probe and the next
+	 * consumers read it; nothing may mutate it.
+	 */
+	peekChangeSet(): ChangeSet | undefined {
+		return this.changeLevels?.[0];
+	}
+
+	/**
+	 * TAKE the open record and open a fresh one: the node calls this at the end of
+	 * each mined block. `undefined` when recording is off. Refused with a
+	 * checkpoint open, because the writes of an open level are not in the open
+	 * record yet and would be attributed to the wrong block.
+	 */
+	takeChangeSet(): ChangeSet | undefined {
+		const levels = this.changeLevels;
+		if (levels === undefined) return undefined;
+		if (levels.length !== 1)
+			throw new Error(
+				'webevm: the change set was taken with a checkpoint open; its writes ' +
+					'would be attributed to the wrong block.',
+			);
+		const taken = levels[0] ?? emptyChangeSet();
+		levels[0] = emptyChangeSet();
+		return taken;
+	}
+
+	/**
+	 * Run a PURE READ (`eth_call`, `eth_estimateGas`, a state override) with
+	 * recording suspended. Its levels are always reverted, so recording there is
+	 * wasted work that the revert would throw away: a COST rule. Correctness does
+	 * not depend on it, and it is guarded anyway: a write at the bottom level (no
+	 * checkpoint open) is still recorded, and a commit INTO the bottom level while
+	 * suspended throws, since that would be a suspended write becoming state.
+	 */
+	async withChangeSetsSuspended<T>(read: () => Promise<T>): Promise<T> {
+		if (this.changeLevels === undefined) return read();
+		this.changeSetsSuspended = (this.changeSetsSuspended ?? 0) + 1;
+		try {
+			return await read();
+		} finally {
+			this.changeSetsSuspended = (this.changeSetsSuspended ?? 1) - 1;
+		}
+	}
+
+	/**
+	 * The record of the CURRENT (top) level, created on first use, or `undefined`
+	 * when nothing should be recorded: recording off, or a suspended pure read above
+	 * the bottom level.
+	 */
+	private recordingLevel(): ChangeSet | undefined {
+		const levels = this.changeLevels;
+		if (levels === undefined) return undefined;
+		const depth = levels.length - 1;
+		if (depth > 0 && (this.changeSetsSuspended ?? 0) > 0) return undefined;
+		let record = levels[depth];
+		if (record === undefined) {
+			record = emptyChangeSet();
+			levels[depth] = record;
+		}
+		return record;
+	}
+
+	/**
+	 * The stack index the PRIOR of a write is read from: the level below the top
+	 * (frozen while the top is open), or the bottom itself when no checkpoint is
+	 * open (read before the write lands).
+	 */
+	private priorIndex(): number {
+		return Math.max(this.accountStack.length - 2, 0);
+	}
+
+	private recordAccountPrior(key: string): void {
+		const record = this.recordingLevel();
+		if (record === undefined || record.accounts.has(key)) return;
+		const prior = this.accountStack[this.priorIndex()].get(
+			key as `0x${string}`,
+		);
+		// A COPY: the object may be handed to (and mutated by) somebody later, and
+		// the record must keep saying what it was.
+		record.accounts.set(key, prior && copyAccount(prior));
+	}
+
+	private recordCodePrior(key: string): void {
+		const record = this.recordingLevel();
+		if (record === undefined || record.code.has(key)) return;
+		record.code.set(
+			key,
+			this.codeStack[this.priorIndex()].get(key as `0x${string}`),
+		);
+	}
+
+	private recordSlotPrior(
+		addressKey: PackedAddressKey,
+		slotKey: PackedSlotKey,
+	): void {
+		const record = this.recordingLevel();
+		if (record === undefined) return;
+		let inner = record.storage.get(addressKey);
+		if (inner?.has(slotKey)) return;
+		if (inner === undefined) {
+			inner = new Map();
+			record.storage.set(addressKey, inner);
+		}
+		inner.set(
+			slotKey,
+			this.storageAtDepth(addressKey, slotKey, this.priorIndex()),
+		);
+	}
+
+	/**
+	 * A storage CLEAR: record every slot the account held (as seen from the level
+	 * below) that is not already recorded, plus the cleared marker. O(slots of
+	 * that account), paid only on a clear and only with recording on.
+	 */
+	private recordClearPrior(addressKey: PackedAddressKey): void {
+		const record = this.recordingLevel();
+		if (record === undefined) return;
+		record.storageCleared.add(addressKey);
+		let inner = record.storage.get(addressKey);
+		const overlays = this.storageOverlays;
+		// Walk downwards exactly as `storageAt` does: a higher overlay shadows a
+		// lower one (the `has` check keeps the first, i.e. highest, value seen), and
+		// an overlay that cleared the account hides everything below it.
+		for (let i = this.priorIndex(); i >= 0; i--) {
+			const overlay = overlays[i];
+			const written = overlay.written.get(addressKey);
+			if (written !== undefined) {
+				for (const [slotKey, value] of written) {
+					if (inner === undefined) {
+						inner = new Map();
+						record.storage.set(addressKey, inner);
+					}
+					if (!inner.has(slotKey)) inner.set(slotKey, value);
+				}
+			}
+			if (overlay.cleared.has(addressKey)) break;
+		}
+	}
+
+	/**
+	 * A commit INTO the bottom level while recording is suspended would turn a
+	 * pure read's unrecorded writes into committed state behind the record, so it
+	 * is refused. No pure read does it (each reverts the level it opened); this is
+	 * the guard that makes the suspension a cost rule and never a correctness one.
+	 */
+	private refuseCommitIntoBottomWhileSuspended(): void {
+		if (
+			this.changeLevels !== undefined &&
+			(this.changeSetsSuspended ?? 0) > 0 &&
+			this.accountStack.length === 2
+		)
+			throw new Error(
+				'webevm: a checkpoint was committed into committed state while change ' +
+					'sets were suspended for a pure read. A pure read must revert its ' +
+					'levels; its writes were not recorded.',
+			);
+	}
+
+	/**
+	 * `commit()`'s half for the change set: merge the top level's record into the
+	 * one below, the BELOW entry winning (it holds the older value: the key was
+	 * written there before the checkpoint).
+	 */
+	private mergeChangeLevelDown(): void {
+		const levels = this.changeLevels;
+		if (levels === undefined) return;
+		const top = levels.pop();
+		if (top === undefined) return;
+		const belowIndex = levels.length - 1;
+		const below = levels[belowIndex];
+		// The top level is gone after this, so nobody else holds its maps: hand them
+		// down whole when the level below has recorded nothing.
+		if (below === undefined) {
+			levels[belowIndex] = top;
+			return;
+		}
+		for (const [key, value] of top.accounts)
+			if (!below.accounts.has(key)) below.accounts.set(key, value);
+		for (const [key, value] of top.code)
+			if (!below.code.has(key)) below.code.set(key, value);
+		for (const [addressKey, slots] of top.storage) {
+			const target = below.storage.get(addressKey);
+			if (target === undefined) {
+				below.storage.set(addressKey, slots);
+				continue;
+			}
+			for (const [slotKey, value] of slots)
+				if (!target.has(slotKey)) target.set(slotKey, value);
+		}
+		for (const addressKey of top.storageCleared)
+			below.storageCleared.add(addressKey);
+	}
+
+	// --- accounts and code ------------------------------------------------------
+	// Every write to the account and code maps goes through the three by-key
+	// methods below, which record the prior first. The async `StateManagerInterface`
+	// writers are wrappers over them; `src/revm-state-store.ts` calls them directly
+	// (it cannot await). Upstream's writers, enumerated from
+	// `@ethereumjs/statemanager@10.1.2`'s `SimpleStateManager`: `putAccount`,
+	// `deleteAccount`, `modifyAccountFields` and `putCode` (which writes the code
+	// map and then the account's `codeHash`). All four are overridden.
+
+	/**
+	 * Write one account SYNCHRONOUSLY, by key, into the TOP level: the account
+	 * twin of {@link setStorageAt}, for revm's synchronous commit callback. The key
+	 * is `address.toString()` (`0x`, lowercase), the upstream stack's key.
+	 * `undefined` tombstones the account, as upstream's `putAccount` does.
+	 */
+	setAccountAt(addressKey: string, account: Account | undefined): void {
+		this.recordAccountPrior(addressKey);
+		this.topAccountStack().set(addressKey as `0x${string}`, account);
+	}
+
+	/**
+	 * Tombstone one account SYNCHRONOUSLY, by key. The ACCOUNT only: the storage
+	 * half is {@link clearStorageAt}, which revm's binding sends immediately
+	 * before (see `removeAccount` in `src/revm-state-store.ts`), and the async
+	 * {@link deleteAccount} does both. Code is left in place, as upstream leaves it.
+	 */
+	removeAccountAt(addressKey: string): void {
+		this.setAccountAt(addressKey, undefined);
+	}
+
+	/**
+	 * Write one account's CODE SYNCHRONOUSLY, by key, into the TOP level. The code
+	 * map only: the account's `codeHash` is the caller's to write (revm's
+	 * `setAccount` carries it; the async {@link putCode} writes it itself).
+	 */
+	setCodeAt(addressKey: string, code: Uint8Array): void {
+		this.recordCodePrior(addressKey);
+		this.topCodeStack().set(addressKey as `0x${string}`, code);
+	}
+
+	/**
+	 * Read one account, handing out a COPY WHEN NO CHECKPOINT IS OPEN.
+	 *
+	 * THE HAZARD: upstream returns the object stored IN the top account map.
+	 * Inside a checkpoint that is harmless, because a level holds copies and the
+	 * change set reads a write's prior from the level below. At the BOTTOM level
+	 * (where the `evm_set*` cheats, `refuseIfSenderCannotSend` and every RPC read
+	 * run) there is no level below: a caller that edits the object and then calls
+	 * `putAccount` (the node's `mutateAccount`, upstream `modifyAccountFields`,
+	 * reached from `putCode`) has overwritten the prior before any write hook
+	 * runs, and the record would hold the NEW value as the old one.
+	 *
+	 * DECISION (state-change-set-capture, 2026-09-28): close it at the seam, by
+	 * copying at the bottom level only, and regardless of whether change sets are
+	 * on, so aliasing semantics do not depend on an internal flag. Rejected: fixing
+	 * `mutateAccount` alone (upstream `modifyAccountFields` does the same);
+	 * recording the prior on the first bottom-level READ (it would put every
+	 * `eth_getBalance`'d key in the record, a superset the history would then
+	 * store per block); copying at every level (the default engine's hot path runs
+	 * inside checkpoints and needs no copy). MEASURED COST: one object allocation
+	 * per bottom-level read, which is only RPC reads and cheats, never the
+	 * interpreter; see
+	 * `docs/spikes/state-change-set-capture/measurements.md`.
+	 */
+	override async getAccount(address: Address): Promise<Account | undefined> {
+		const account = this.topAccountStack().get(address.toString());
+		if (account === undefined || this.accountStack.length > 1) return account;
+		return copyAccount(account);
+	}
+
+	override async putAccount(
+		address: Address,
+		account?: Account | undefined,
+	): Promise<void> {
+		this.setAccountAt(address.toString(), account);
+	}
+
+	/**
+	 * Read-modify-write of named fields. Overridden rather than inherited so the
+	 * write provably goes through {@link putAccount} and the read through
+	 * {@link getAccount}'s bottom-level copy, instead of depending on upstream's
+	 * `modifyAccountFields` helper keeping that shape.
+	 */
+	override async modifyAccountFields(
+		address: Address,
+		accountFields: AccountFields,
+	): Promise<void> {
+		const account = (await this.getAccount(address)) ?? new Account();
+		account.nonce = accountFields.nonce ?? account.nonce;
+		account.balance = accountFields.balance ?? account.balance;
+		account.storageRoot = accountFields.storageRoot ?? account.storageRoot;
+		account.codeHash = accountFields.codeHash ?? account.codeHash;
+		account.codeSize = accountFields.codeSize ?? account.codeSize;
+		await this.putAccount(address, account);
+	}
+
+	/**
+	 * Upstream's `putCode`, restated so the code-map write goes through
+	 * {@link setCodeAt}: the code, then an empty account if there was none, then
+	 * the account's `codeHash`.
+	 */
+	override async putCode(address: Address, value: Uint8Array): Promise<void> {
+		this.setCodeAt(address.toString(), value);
+		if ((await this.getAccount(address)) === undefined)
+			await this.putAccount(address, new Account());
+		await this.modifyAccountFields(address, {
+			codeHash: (this.common?.customCrypto.keccak256 ?? keccak_256)(value),
+		});
 	}
 
 	// --- storage -------------------------------------------------------------
@@ -326,8 +771,21 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 		addressKey: PackedAddressKey,
 		slotKey: PackedSlotKey,
 	): Uint8Array | undefined {
+		return this.storageAtDepth(
+			addressKey,
+			slotKey,
+			this.storageOverlays.length - 1,
+		);
+	}
+
+	/** {@link storageAt} as seen from overlay `from` downwards. */
+	private storageAtDepth(
+		addressKey: PackedAddressKey,
+		slotKey: PackedSlotKey,
+		from: number,
+	): Uint8Array | undefined {
 		const overlays = this.storageOverlays;
-		for (let i = overlays.length - 1; i >= 0; i--) {
+		for (let i = from; i >= 0; i--) {
 			const overlay = overlays[i];
 			const hit = overlay.written.get(addressKey)?.get(slotKey);
 			if (hit !== undefined) return hit;
@@ -357,6 +815,7 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 		value: Uint8Array,
 	): void {
 		const top = this.topOverlay();
+		this.recordSlotPrior(addressKey, slotKey);
 		let inner = top.written.get(addressKey);
 		if (inner === undefined) {
 			inner = new Map();
@@ -389,6 +848,7 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 */
 	clearStorageAt(addressKey: PackedAddressKey): void {
 		const top = this.topOverlay();
+		this.recordClearPrior(addressKey);
 		top.written.delete(addressKey);
 		if (this.storageOverlays.length > 1) top.cleared.add(addressKey);
 	}
@@ -464,7 +924,7 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * frame is reverted.
 	 */
 	override async deleteAccount(address: Address): Promise<void> {
-		await super.deleteAccount(address);
+		this.removeAccountAt(address.toString());
 		this.clearStorageAt(packAddressKey(address.bytes));
 	}
 
@@ -512,6 +972,9 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * overlay's outer map and each inner map), because the copy's overlays are not
 	 * this object's: sharing an inner map would let a write on the copy land in
 	 * this manager's committed state.
+	 *
+	 * CHANGE-SET RECORDING IS NOT COPIED: the copy starts with it off. A copy's
+	 * writes are not this node's blocks.
 	 */
 	override shallowCopy(): OverlayStorageStateManager {
 		const copy = new OverlayStorageStateManager({common: this.common});

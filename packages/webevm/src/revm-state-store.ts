@@ -138,6 +138,11 @@ export interface SimpleStateStoreOptions {
  * So this asserts the storage side by the two ACCESSORS the adapter actually
  * calls plus the overlay stack's own shape, and `test/storage-overlay.spec.ts`
  * feeds it a stock `SimpleStateManager` (the flat layout) to prove it refuses one.
+ *
+ * It also requires the synchronous ACCOUNT and CODE writers (`setAccountAt`,
+ * `setCodeAt`, `removeAccountAt`), because the store writes through them so the
+ * node's per-block change set sees every revm write; `test/change-set.spec.ts`
+ * proves a manager lacking them is refused by name.
  */
 export function assertStateShape(sm: OverlayStorageStateManager): void {
 	for (const name of ['accountStack', 'codeStack'] as const) {
@@ -168,6 +173,28 @@ export function assertStateShape(sm: OverlayStorageStateManager): void {
 				'OverlayStorageStateManager. The revm engine reads AND writes storage ' +
 				'synchronously through those accessors; a state manager with a different ' +
 				'storage representation would answer every slot as ZERO rather than failing. ' +
+				'See src/state-manager.ts.',
+		);
+	}
+	// THE ACCOUNT AND CODE WRITERS, by key and synchronous. The store must write
+	// accounts and code THROUGH them rather than into the maps, because that is
+	// where the node records the per-block change set (the open record): a direct
+	// map write would change state without the record ever hearing of it, which
+	// no read and no gas figure can detect. See the header of src/state-manager.ts.
+	const writers = ['setAccountAt', 'setCodeAt', 'removeAccountAt'] as const;
+	const missingWriters = writers.filter(
+		(name) =>
+			typeof (sm as unknown as Record<string, unknown>)[name] !== 'function',
+	);
+	if (missingWriters.length > 0) {
+		throw new Error(
+			`webevm/revm: the state manager does not expose ${missingWriters
+				.map((name) => `${name}()`)
+				.join(', ')} (it must have setAccountAt(), setCodeAt() and ` +
+				"removeAccountAt()), so it is not the node's OverlayStorageStateManager. " +
+				'The revm engine writes accounts and code synchronously through those ' +
+				'methods, which is where the node records every write it has to be able to ' +
+				'undo; writing the maps directly would change state behind that record. ' +
 				'See src/state-manager.ts.',
 		);
 	}
@@ -354,24 +381,28 @@ export class SimpleStateManagerStore implements StateStore {
 	// storage from a previous life at its address. None of that is re-derived here;
 	// re-deriving it is how a host gets EIP-161 subtly wrong.
 	//
-	// EACH ONE IS ONE MAP WRITE INTO THE TOP OF THE NODE'S OWN STATE, at the same
+	// EACH ONE IS ONE WRITE INTO THE TOP OF THE NODE'S OWN STATE, at the same
 	// depth `putAccount` / `putCode` / `putStorage` write to, so a transaction's
 	// cost is proportional to what it touched and a `revert()` above still drops it.
-	// They are written against the state manager's REPRESENTATION rather than its
-	// async interface for the reason in the header: revm's commit runs inside a
-	// synchronous wasm callback and every `StateManagerInterface` method returns a
-	// `Promise`.
+	// They go through the state manager's SYNCHRONOUS by-key writers
+	// (`setAccountAt`, `setCodeAt`, `removeAccountAt`, `setStorageAt`,
+	// `clearStorageAt`) rather than its async interface, for the reason in the
+	// header: revm's commit runs inside a synchronous wasm callback and every
+	// `StateManagerInterface` method returns a `Promise`. And through THOSE rather
+	// than straight into the maps, because the writers are where the node records
+	// the per-block change set: a map write here would change state behind it.
+	// `assertStateShape` refuses a state manager without them.
 
 	setAccount(address: Address, account: AccountState): void {
-		const accounts = this.#accounts;
+		const sm = this.#connected();
 		const key = addrKey(address);
-		const existing = accounts.get(key);
+		const existing = this.#accounts.get(key);
 		// The storage ROOT is carried over rather than computed: `SimpleStateManager`
 		// implements no state-root logic at all, so this field never reflects storage
 		// on either engine (ADR 0009 records the EIP-7610 consequence). Carrying it
 		// keeps a revm-written account byte-identical to an ethereumjs-written one,
 		// which is what `dumpState` serialises.
-		accounts.set(
+		sm.setAccountAt(
 			key,
 			new Account(
 				account.nonce,
@@ -386,7 +417,7 @@ export class SimpleStateManagerStore implements StateStore {
 		// deposited code for it — never for an account that merely received ether.
 		const hashKey = hexOf(account.codeHash);
 		const code = this.#pendingCode.get(hashKey);
-		if (code !== undefined) this.#code.set(key, code);
+		if (code !== undefined) sm.setCodeAt(key, code);
 	}
 
 	setCode(codeHash: Bytes32, code: Uint8Array): void {
@@ -432,7 +463,7 @@ export class SimpleStateManagerStore implements StateStore {
 		// learned to clear storage on `deleteAccount` (ADR 0007's 2026-08-10
 		// amendment); before that it left a dead contract's slots readable, and the
 		// two engines' post-state differed on exactly this.
-		this.#accounts.set(addrKey(address), undefined);
+		this.#connected().removeAccountAt(addrKey(address));
 	}
 
 	/**

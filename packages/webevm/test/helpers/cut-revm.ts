@@ -86,6 +86,9 @@
  *                      on both engines, with every state reading unmoved
  *   - 'rpc-params'  : the SHARED state-override battery (helpers/rpc-params.ts):
  *                      overrides the node applies are SEEN by revm and gone after
+ *   - 'change-set'  : the SHARED change-set differential (helpers/change-set.ts):
+ *                      revm's synchronous writes reach the per-block record with
+ *                      the same prior values the default engine's do
  */
 import type {
 	CodeUnderTest,
@@ -105,6 +108,7 @@ import {runRevmStorageKeys} from './revm-storage-keys.js';
 import {runRevmStateRoundTrip} from './revm-state-roundtrip.js';
 import {runRevmConcurrency} from './revm-concurrency.js';
 import {runRevmRpcParams} from './revm-rpc-params.js';
+import {runRevmChangeSet} from './revm-change-set.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {
 	runRevmPersistWrite,
@@ -291,6 +295,17 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'rpc-params') {
 			try {
 				results.revmRpcParams = await runRevmRpcParams();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The SHARED change-set differential, with revm installed: its commit writes
+		// the state synchronously, through the by-key writers the record lives in.
+		if (ctx.params.mode === 'change-set') {
+			try {
+				results.revmChangeSet = await runRevmChangeSet();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
