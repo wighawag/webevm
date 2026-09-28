@@ -500,6 +500,25 @@ function validateStateHistory(options: NodeOptions): number | undefined {
 	return blocks;
 }
 
+/**
+ * Validate {@link NodeOptions.genesisTimestamp}: ABSENT (`undefined`) returns
+ * `undefined` (block 0 takes the wall clock); a non-negative bigint returns
+ * itself; anything else throws. A NUMBER is refused rather than converted, even
+ * a whole one: every other timestamp the node takes (`blockEnv.timestamp`) is a
+ * bigint, and accepting both would make the option mean two types.
+ */
+function validateGenesisTimestamp(options: NodeOptions): bigint | undefined {
+	if (options.genesisTimestamp === undefined) return undefined;
+	const value = options.genesisTimestamp as unknown;
+	if (typeof value !== 'bigint' || value < 0n)
+		throw new Error(
+			`webevm: genesisTimestamp must be a non-negative bigint (seconds since the ` +
+				`epoch, e.g. 1700000000n), or absent for the wall clock; got ` +
+				`${typeof value === 'bigint' ? `${value}n` : `${describeOption(value)} (${typeof value})`}.`,
+		);
+	return value;
+}
+
 function describeOption(value: unknown): string {
 	try {
 		const s = JSON.stringify(value);
@@ -527,6 +546,7 @@ export async function createNodeWithInternals(
 	const blockGasLimit = options.blockGasLimit ?? 30_000_000n;
 	// Validated before anything is built, so a bad option costs nothing.
 	const stateHistoryBlocks = validateStateHistory(options);
+	const genesisTimestamp = validateGenesisTimestamp(options);
 	/**
 	 * `computeStateRoot: true`: derive a trie from the flat state, report its
 	 * root. Only `true` turns it on (see {@link NodeOptions.computeStateRoot}).
@@ -882,13 +902,16 @@ export async function createNodeWithInternals(
 	// `number`, `timestamp` and `gasLimit` stay the node's own: genesis IS block 0,
 	// and `blockEnv.number` places a MINED block rather than renumbering the chain's
 	// genesis (`minedBlockGasLimit` above is likewise the MINED block's limit).
+	// Its timestamp is `genesisTimestamp` when given, else the wall clock: a
+	// separate option rather than `blockEnv.timestamp`, which pins every MINED
+	// block to one value and so cannot also be block 0's (see the option's JSDoc).
 	const genesis = createBlock(
 		{
 			header: {
 				number: 0n,
 				gasLimit: blockGasLimit,
 				baseFeePerGas,
-				timestamp: BigInt(Math.floor(Date.now() / 1000)),
+				timestamp: genesisTimestamp ?? BigInt(Math.floor(Date.now() / 1000)),
 				...(blockEnv?.coinbase
 					? {coinbase: createAddressFromString(blockEnv.coinbase)}
 					: {}),

@@ -672,6 +672,7 @@ where execution runs OUT of gas.
   fields apply to the **genesis** block as well, describing the environment the
   chain runs under; `number`, `timestamp` and `gasLimit` are mined-block-only
   (block 0 is block 0).
+- **`genesisTimestamp`**: block 0's timestamp, a `bigint` in seconds since the epoch (the unit of `blockEnv.timestamp`). Absent means the wall clock at `createNode()`, so two nodes created in different seconds hash every block differently; set it (with `blockEnv.timestamp` pinning the mined blocks) and the same chain gives the same hashes and a byte-identical `dumpState`. It moves only block 0: mined blocks keep the wall clock (or `blockEnv.timestamp`) even when it is in the future. A `loadState` (or an IndexedDB restore) brings its own block 0, which wins. Anything but a non-negative `bigint` throws at construction.
 
 ## Persistence (IndexedDB)
 

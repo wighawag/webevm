@@ -518,6 +518,39 @@ export interface NodeOptions {
 	 */
 	initialState?: Record<string, GenesisAccount>;
 	/**
+	 * The TIMESTAMP OF THE GENESIS BLOCK (block 0), in seconds since the epoch: the
+	 * same unit and type as {@link BlockEnv.timestamp} and the header field.
+	 * ABSENT MEANS THE WALL CLOCK, in whole seconds at construction, which is what
+	 * block 0 has always carried.
+	 *
+	 * Why it exists: genesis is otherwise the one block a consumer cannot pin, so
+	 * two nodes running the same chain, created in different seconds, report
+	 * different hashes for every block. With this set (and `blockEnv.timestamp`
+	 * pinning the mined blocks), the same chain produces the same hashes and a
+	 * byte-identical `dumpState`.
+	 *
+	 * INDEPENDENT OF `blockEnv`, which still does not touch genesis's timestamp:
+	 * `blockEnv` pins every MINED block's environment to one fixed value, and
+	 * stretching it to genesis would stamp block 0 and every block after it alike.
+	 * The converse holds too: this option moves ONLY block 0. A `genesisTimestamp`
+	 * in the future does not move mined blocks, which keep the wall clock (or
+	 * `blockEnv.timestamp`), so a mined block can then carry an EARLIER timestamp
+	 * than genesis.
+	 *
+	 * A NEW GENESIS ONLY: a state loaded with `loadState` (or restored by
+	 * `persistence` at construction) brings its own block 0, timestamp included,
+	 * and that one wins. A `dumpState` carries the timestamp like every other
+	 * header field.
+	 *
+	 * Must be a non-negative bigint; anything else (a number, a string, a negative
+	 * bigint) throws at construction naming this option. It is not bounded above,
+	 * the same as `blockEnv.timestamp`, but a dump records every block's timestamp
+	 * as a JS number, so only a value up to `Number.MAX_SAFE_INTEGER` survives a
+	 * `dumpState` / `loadState` round trip exactly (any real date does). It crosses `createWorkerNode` like every
+	 * other option (a bigint structured-clones).
+	 */
+	genesisTimestamp?: bigint;
+	/**
 	 * Override the header fields of MINED blocks. Lets a consumer run a tx under a
 	 * specific block environment (coinbase, base fee, number, timestamp,
 	 * prevRandao) — required to reproduce a GeneralStateTest `env` (the coinbase is
