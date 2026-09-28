@@ -2,15 +2,16 @@
 title: EIP-7610 storage collisions refused in every mode, on both engines
 slug: eip-7610-spec-current-in-every-mode
 spec: trie-mode-derives-its-root-from-the-flat-state
-needsAnswers: true
 blockedBy: [spike-revm-eip-7610-storage-collision, rename-statemode-to-computestateroot]
 covers: [8]
+reason: superseded by the reference spec. The spike found EIP-7610 is still Last Call and execution-specs PR #3508 (merged 2026-09-23) specifies the opposite: a creation over a zero-nonce, code-less address that holds storage succeeds and wipes the storage (EIP-684). `stateMode:'none'` and revm-wasm 0.3.1 already do that; the human agreed on 2026-09-28 to reverse the decision, and `trie-derived-from-the-flat-state` now delivers story 8 by making every node follow the reference spec. Evidence: `work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`.
 ---
 
 <!-- open-questions -->
 
 ## Open questions
 
+0. **ASKED FIRST, and it may cancel this task: should the decision be REVERSED?** The spike (`docs/spikes/revm-eip-7610-storage-collision/measurements.md`, finding `work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`) found that the premise is wrong. EIP-7610 is still Last Call, and the reference spec (execution-specs PR #3508, merged 2026-09-23) now says the opposite: a creation over a zero-nonce, code-less account that holds storage SUCCEEDS and WIPES the storage (EIP-684 plus the Yellow Paper), with the case left undefined across clients until EIP-8253 bumps the 28 mainnet accounts' nonces. `stateMode:'none'` and revm-wasm 0.3.1 already do exactly that; only `stateMode:'trie'` (via `MerkleStateManager`) refuses, and `trie-derived-from-the-flat-state` removes that path. Recommended: cancel this task (reason: superseded by the reference spec), let every node follow EIP-684 with storage wiped, and have `trie-derived-from-the-flat-state` rewrite the README's state-mode asymmetry paragraph and the `src/state-manager.ts` EIP-7610 note to say so instead of keeping a trie-mode `CREATE_COLLISION` test pending on this task. If you answer "keep EIP-7610", question 1 applies, and the spike measured that revm-wasm 0.3.1 does NOT refuse the storage case and cannot see storage through the store.
 1. **Which route, if the spike finds revm-wasm does NOT refuse a storage-only collision?** Options the spike will cost: (a) an upstream fix in revm-wasm, this task then blocked on its release; (b) the revm state store presenting an account that holds storage in a way revm's existing nonce/code check refuses, with whatever that breaks. If the spike finds revm DOES refuse it on both the top-level and the inner path, answer "not needed" and clear `needsAnswers`.
 
 <!-- /open-questions -->

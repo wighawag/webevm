@@ -29,7 +29,7 @@ Blast radius measured at tasking: 127 occurrences in 62 files across `packages/w
 
 ## Blocked by
 
-- `trie-derived-from-the-flat-state` (after it every node runs on the flat state, which is what makes the rename honest). Deliberately NOT blocked by `eip-7610-spec-current-in-every-mode`, which is gated on an open question and possibly an upstream release; that task is ordered AFTER this one instead and is written in the new vocabulary.
+- `trie-derived-from-the-flat-state` (after it every node runs on the flat state, which is what makes the rename honest).
 
 ## Prompt
 

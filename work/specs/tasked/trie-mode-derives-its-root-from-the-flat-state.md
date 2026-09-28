@@ -35,7 +35,7 @@ This does not give history. A trie yields a ROOT per block; reading old state th
 
 ## Where the detail went
 
-The implementation and testing detail moved to the tasks `spike-revm-eip-7610-storage-collision`, `trie-derived-from-the-flat-state`, `eip-7610-spec-current-in-every-mode`, `rename-statemode-to-computestateroot` and `computestateroot-cost-benchmark` (tasked 2026-09-28). The decisions they carry: the flat state is authoritative for every node and the trie is derived from each block's change set (ADR written by `trie-derived-from-the-flat-state`); EIP-7610 is spec-current in every mode; `stateMode` is replaced by `computeStateRoot` with no compatibility alias.
+The implementation and testing detail moved to the tasks `spike-revm-eip-7610-storage-collision`, `trie-derived-from-the-flat-state`, `rename-statemode-to-computestateroot` and `computestateroot-cost-benchmark` (tasked 2026-09-28). The decisions they carry: the flat state is authoritative for every node and the trie is derived from each block's change set (ADR written by `trie-derived-from-the-flat-state`); `stateMode` is replaced by `computeStateRoot` with no compatibility alias. **Amended 2026-09-28:** the launch decision "EIP-7610 spec-current in every mode" was REVERSED after the spike: the reference spec now wipes storage on a storage-only creation (EIP-684), `'none'` mode and revm already do that, and every node will. Story 8 is delivered by `trie-derived-from-the-flat-state`; the task `eip-7610-spec-current-in-every-mode` was cancelled. Evidence: `work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`.
 
 ## Out of Scope
 

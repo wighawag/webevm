@@ -3,7 +3,7 @@ title: Trie mode runs on the flat state, with the trie derived per block
 slug: trie-derived-from-the-flat-state
 spec: trie-mode-derives-its-root-from-the-flat-state
 blockedBy: [state-change-set-capture, state-history-persistence, state-history-docs-and-worker]
-covers: [1, 2, 3, 4, 5, 6, 7, 9]
+covers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
 ---
 
 ## What to build
@@ -19,7 +19,7 @@ Make `stateMode:'trie'` mean "the same flat state as every node, plus a Merkle-P
 - Trie mode dumps and loads exactly like `'none'` (storage included); on load the trie is rebuilt once from the loaded flat state. The trie itself is never serialised.
 - `stateHistory` with trie mode is no longer refused (story 9).
 
-EIP-7610 is NOT changed here (it moves with `eip-7610-spec-current-in-every-mode`). Until then trie mode inherits `'none'` mode's clear-and-proceed behaviour; say so in the changeset and keep any existing test that asserts trie-mode `CREATE_COLLISION` pending on that task rather than deleting it (that task now lands after `rename-statemode-to-computestateroot`).
+**Storage-only creation collisions follow the reference spec, on every node** (decided with the user 2026-09-28, reversing the spec's earlier "EIP-7610 everywhere" decision; evidence in `work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`). A creation over a zero-nonce, code-less address that holds storage SUCCEEDS and wipes the storage, as execution-specs PR #3508 specifies (EIP-684 plus the Yellow Paper). `'none'` mode and revm already do exactly that, so this falls out of moving trie mode onto the flat state; the one test that pins trie mode REFUSING it (the EIP-7610 case in `test/helpers/slim-node-checks.ts` and its spec) is FLIPPED to assert the reference behaviour in both modes, not deleted and not parked. The README's state-mode asymmetry paragraph and the EIP-7610 note in the `src/state-manager.ts` header are REWRITTEN (not appended to): there is no asymmetry any more, and the text says which rule every node follows and cites the finding.
 
 ## Acceptance criteria
 
@@ -29,7 +29,8 @@ EIP-7610 is NOT changed here (it moves with `eip-7610-spec-current-in-every-mode
 - [ ] A trie-mode dump includes storage, and a reload reproduces every root.
 - [ ] `'none'` mode does no trie work (direct probe: no trie object is created).
 - [ ] History works in trie mode (one of `state-history-point-reads`' batteries run in trie mode).
-- [ ] A new ADR: "the trie is derived from the flat state, not a state manager", and a superseding amendment to ADR 0005's "`stateMode:'trie'` is a no" section. README's state-mode section updated.
+- [ ] A creation at a storage-only address succeeds and wipes the storage on every node (with and without trie mode) and on both engines; the nonce and code collisions are still refused everywhere (reuse the spike's cases in `docs/spikes/revm-eip-7610-storage-collision/`).
+- [ ] A new ADR: "the trie is derived from the flat state, not a state manager", which also records that storage-only collisions follow the reference spec (EIP-684, storage wiped) rather than EIP-7610, with the finding as its source, and a superseding amendment to ADR 0005's "`stateMode:'trie'` is a no" section. README's state-mode section updated.
 
 ## Blocked by
 
