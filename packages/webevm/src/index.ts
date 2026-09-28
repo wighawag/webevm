@@ -17,6 +17,7 @@ export type {
 	MiningConfig,
 	StateMode,
 	SenderMode,
+	StateHistoryOptions,
 	// The engine seam: implement `Engine` to put a different EVM behind the node —
 	// its reads (`call`) and its transactions (`transact`). Types only, so the core
 	// never imports a non-default engine.

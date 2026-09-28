@@ -35,7 +35,12 @@
  */
 import {createVM, type VM} from '@ethereumjs/vm';
 import {MerkleStateManager} from '@ethereumjs/statemanager';
-import {OverlayStorageStateManager, type ChangeSet} from './state-manager.js';
+import {
+	OverlayStorageStateManager,
+	mergeChangeSetOlderWins,
+	type ChangeSet,
+} from './state-manager.js';
+import {packAddressKey, packSlotKey} from './storage-keys.js';
 import {Common, Mainnet, Hardfork} from '@ethereumjs/common';
 import {createBlock, type Block} from '@ethereumjs/block';
 import {createTxFromRLP, createTx, type TypedTransaction} from '@ethereumjs/tx';
@@ -293,10 +298,10 @@ export interface NodeInternals {
 	/**
 	 * Record the per-block CHANGE SET (the open record of prior values; see the
 	 * header of ./state-manager.ts). Off by default, and a node with it off
-	 * records nothing and pays nothing. The tasks `state-history-point-reads`
-	 * (`stateHistory`) and `trie-mode-derives-its-root-from-the-flat-state`
-	 * (`computeStateRoot`) turn it on from their options; until then only the
-	 * tests do, through {@link createNodeWithInternals}. `'none'` state mode only:
+	 * records nothing and pays nothing. `stateHistory` turns it on (and RETAINS
+	 * the records); `trie-mode-derives-its-root-from-the-flat-state`
+	 * (`computeStateRoot`) will too. This flag turns on recording alone, for the
+	 * tests, through {@link createNodeWithInternals}. `'none'` state mode only:
 	 * the change set lives in `OverlayStorageStateManager`.
 	 */
 	recordChangeSets?: boolean;
@@ -310,6 +315,11 @@ export interface NodeInternals {
  */
 export interface ChangeSetProbe {
 	recording: boolean;
+	/**
+	 * The block numbers whose change set the node RETAINS as a sealed undo record
+	 * (`stateHistory`), oldest first. Empty on a node without history.
+	 */
+	sealedBlocks: readonly number[];
 	/** What the last MINED block changed, with each key's value at the end of the block before it. */
 	headBlock: ChangeSet | undefined;
 	/** Every write since the head was mined (cheats, a loaded baseline is cleared). */
@@ -334,6 +344,56 @@ export function changeSetsForTests(node: SlimNode): ChangeSetProbe {
 	return probe();
 }
 
+/**
+ * Validate {@link NodeOptions.stateHistory}: ABSENT (`undefined`) is off and
+ * returns `undefined`; `{blocks: N}` with N a positive safe integer returns N;
+ * anything else throws, as does combining it with `stateMode:'trie'`.
+ *
+ * WHY TRIE MODE IS REFUSED rather than served or ignored: the history is an undo
+ * log kept by `OverlayStorageStateManager`, the `'none'` mode's flat state, and
+ * `'trie'` runs on `MerkleStateManager`, which records nothing. Accepting the
+ * option there would silently serve nothing. The refusal lifts when trie mode
+ * derives its root from the flat state (`trie-derived-from-the-flat-state`).
+ */
+function validateStateHistory(
+	options: NodeOptions,
+	stateMode: string,
+): number | undefined {
+	if (options.stateHistory === undefined) return undefined;
+	const value = options.stateHistory as unknown;
+	const blocks =
+		typeof value === 'object' && value !== null
+			? (value as {blocks?: unknown}).blocks
+			: undefined;
+	if (
+		typeof blocks !== 'number' ||
+		!Number.isSafeInteger(blocks) ||
+		blocks <= 0
+	)
+		throw new Error(
+			`webevm: stateHistory must be {blocks: N} with N a positive safe integer ` +
+				`(how many blocks below the head stay readable), or absent for no history; ` +
+				`got ${describeOption(value)}.`,
+		);
+	if (stateMode === 'trie')
+		throw new Error(
+			"webevm: stateHistory is not available with stateMode:'trie'. The history is " +
+				"an undo log over the 'none' mode's flat state, and trie mode does not run " +
+				'on that state yet, so it would record nothing. Use the default ' +
+				"stateMode:'none' for history.",
+		);
+	return blocks;
+}
+
+function describeOption(value: unknown): string {
+	try {
+		const s = JSON.stringify(value);
+		return s === undefined ? String(value) : s;
+	} catch {
+		return String(value);
+	}
+}
+
 export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 	return createNodeWithInternals(options, {});
 }
@@ -351,6 +411,8 @@ export async function createNodeWithInternals(
 	const gasPrice = options.gasPrice ?? 1_000_000_000n;
 	const maxPriorityFeePerGas = options.maxPriorityFeePerGas ?? 1_000_000_000n;
 	const blockGasLimit = options.blockGasLimit ?? 30_000_000n;
+	// Validated before anything is built, so a bad option costs nothing.
+	const stateHistoryBlocks = validateStateHistory(options, stateMode);
 
 	const common = new Common({
 		chain: {...Mainnet, chainId, name: 'webevm'},
@@ -376,7 +438,7 @@ export async function createNodeWithInternals(
 	// state at genesis). `changeSets` is the manager when recording, else
 	// `undefined`, so every use below is one optional call.
 	let changeSets: OverlayStorageStateManager | undefined;
-	if (internals.recordChangeSets) {
+	if (internals.recordChangeSets || stateHistoryBlocks !== undefined) {
 		if (!(sm instanceof OverlayStorageStateManager))
 			throw new Error(
 				"webevm: change sets are recorded in stateMode:'none' only; the trie " +
@@ -387,10 +449,28 @@ export async function createNodeWithInternals(
 	}
 	/**
 	 * The change set of the HEAD block, taken from the open record when the block
-	 * was mined. Only the head's is kept: holding a window of them is
-	 * `state-history-point-reads`' job, which will replace this one slot.
+	 * was mined. With `stateHistory` it is also the newest entry of {@link sealed};
+	 * this slot is what the test probe reports as `headBlock`, with or without it.
 	 */
 	let headBlockChangeSet: ChangeSet | undefined;
+	/**
+	 * THE UNDO LOG (`stateHistory`): the SEALED change set of each of the last N
+	 * mined blocks, oldest first. `sealed[i].changes` holds, for every key block
+	 * `sealed[i].number` changed, the value it had at the END of the block before.
+	 * Appended in `executeAndMine`, evicted there (anything at or below `head - N`
+	 * serves no block in the window), and cleared by `loadState`. Always empty on a
+	 * node without the option. See {@link historicalValue} for how a read uses it,
+	 * and `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`
+	 * for why it is an undo log.
+	 */
+	const sealed: {number: number; changes: ChangeSet}[] = [];
+	/**
+	 * The oldest block whose state the undo log can reconstruct, WHATEVER the
+	 * window: genesis at construction, the loaded head after `loadState` (a loaded
+	 * dump is a baseline and carries no history). The window's oldest servable
+	 * block is the later of this and `head - N`.
+	 */
+	let historyFloor = 0;
 	/**
 	 * Run a PURE READ (`eth_call`, `eth_estimateGas`, `eth_fillTransaction`'s
 	 * estimate, with or without state overrides) with change-set recording
@@ -920,10 +1000,35 @@ export async function createNodeWithInternals(
 		// the two blocks, which belongs to this block (the first one that can see
 		// it). Taken with no checkpoint open, which `takeChangeSet` insists on.
 		if (changeSets) headBlockChangeSet = changeSets.takeChangeSet();
+		if (stateHistoryBlocks !== undefined && headBlockChangeSet !== undefined)
+			sealBlock(blockNumber, headBlockChangeSet, stateHistoryBlocks);
 		// emit newHeads
 		for (const cb of headSubs) cb({number: blockNumber, hash: blockHash});
 
 		return {blockNumber, blockHash, txHashes};
+	}
+
+	/**
+	 * SEAL the change set just taken as block `number`'s undo record, and EVICT
+	 * every record at or below `head - N`: a read at the oldest servable block
+	 * `head - N` needs the records of blocks `head - N + 1 .. head` and no other,
+	 * so exactly N are kept.
+	 *
+	 * A block MINED UNDER THE SAME NUMBER as the newest record (a fixed
+	 * `blockEnv.number` does that: every mined block replaces the head) is MERGED
+	 * into it, the older entry winning, as a checkpoint commit merges: the merged
+	 * record then holds each key's value from before the first of them, which is
+	 * what a read below that number needs, and the log stays bounded.
+	 */
+	function sealBlock(number: number, changes: ChangeSet, window: number): void {
+		const newest = sealed[sealed.length - 1];
+		if (newest !== undefined && newest.number === number)
+			mergeChangeSetOlderWins(newest.changes, changes);
+		else sealed.push({number, changes});
+		const oldestKept = latestNumber - window;
+		let drop = 0;
+		while (drop < sealed.length && sealed[drop].number <= oldestKept) drop++;
+		if (drop > 0) sealed.splice(0, drop);
 	}
 
 	async function mineBlock() {
@@ -1294,8 +1399,9 @@ export async function createNodeWithInternals(
 	 * REFUSE A STATE READ PINNED TO A BLOCK WHOSE STATE THIS NODE DOES NOT HOLD,
 	 * instead of answering it from the head. Every method that reads STATE at a
 	 * block (`eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`,
-	 * `eth_getStorageAt`, `eth_getTransactionCount`) calls this with its block
-	 * parameter BEFORE touching state.
+	 * `eth_getStorageAt`, `eth_getTransactionCount`) calls this, or
+	 * {@link historicalBlock} which extends it, with its block parameter BEFORE
+	 * touching state.
 	 *
 	 * ## Why this exists
 	 *
@@ -1307,20 +1413,30 @@ export async function createNodeWithInternals(
 	 * a different answer from every other node, delivered silently, which is the one
 	 * outcome that is not acceptable.
 	 *
-	 * ## Why REFUSE rather than serve historical state
+	 * ## What the node holds: the head, plus an OPT-IN undo log
 	 *
-	 * This node holds exactly ONE state: the live one. In the default `'none'` mode
-	 * the state manager's checkpoint/overlay stack is the journal of the execution in
-	 * flight, not a history of blocks, and nothing of block N survives the mining of
-	 * N+1. Serving history would mean retaining a per-block copy (or a per-block
-	 * reverse diff) of every account and slot a block touched, AND routing an
-	 * engine's reads to it: the revm engine reads the live stacks synchronously
-	 * mid-opcode (./revm-state-store.ts, ADR 0005) and cannot run on `'trie'` at
-	 * all, so even `'trie'` mode's per-block `stateRoot` would help one engine in
-	 * one mode. Swapping a shared state manager's root under a read and back is also
-	 * precisely the kind of shared-stack mutation the serialisation point above
-	 * exists to contain. A bounded history is a feature to design on its own; until
-	 * then the honest answer to "what was the state at N" is "not available here".
+	 * This node holds ONE state: the live one. In the default `'none'` mode the
+	 * state manager's checkpoint/overlay stack is the journal of the execution in
+	 * flight, not a history of blocks. Without `stateHistory` nothing of block N
+	 * survives the mining of N+1, and the honest answer to "what was the state at
+	 * N" is "not available here".
+	 *
+	 * WITH `stateHistory: {blocks: N}` the node keeps, per mined block, the value
+	 * every key the block changed had BEFORE it (the sealed change sets, an undo
+	 * log over the one flat state; see
+	 * `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`),
+	 * and the four POINT
+	 * reads at a block K in the window are answered from it by
+	 * {@link historicalValue} with no state manager involvement and no checkpoint.
+	 * That SUPERSEDES the reasoning this comment used to give for refusing all
+	 * history (retained copies, or swapping a shared state manager's root under a
+	 * read): an undo log needs neither, and a point read never touches the engine,
+	 * so both engines are served alike.
+	 *
+	 * `eth_call` AND `eth_estimateGas` STAY AT THE HEAD even inside the window, and
+	 * this function is their gate: executing at K needs K's state under an ENGINE,
+	 * which is the `historical-eth-call` task (the same records applied through the
+	 * state-override checkpoint). Their refusal says so.
 	 *
 	 * ## What is served, and what is refused
 	 *
@@ -1333,18 +1449,101 @@ export async function createNodeWithInternals(
 	 *    exception is `eth_getTransactionCount`, which adds the sender's queued
 	 *    transactions so that two sends before a mine get two nonces. `safe` and
 	 *    `finalized` are the head because a local chain has no reorgs.) `earliest`
-	 *    is served only while the head IS block 0.
-	 *  - REFUSED, -32000 `historical state not available`: any existing block below
-	 *    the head. The same code geth uses for pruned state (`missing trie node`),
-	 *    with a message that says what to do.
+	 *    is served while block 0 is the head or, for a point read, in the window.
+	 *  - SERVED FROM HISTORY (point reads only): any block from
+	 *    {@link oldestServableBlock} up to the head, named any of those ways.
+	 *  - REFUSED, -32000 `historical state not available`: a block below the oldest
+	 *    servable one (with no `stateHistory`, that is every block below the head),
+	 *    with a message naming the oldest servable block and the `stateHistory`
+	 *    option. The same code geth uses for pruned state (`missing trie node`).
+	 *    `eth_call` / `eth_estimateGas` below the head, window or not, get the same
+	 *    code and a message saying they are served at the head only.
 	 *  - REFUSED, -32000 `header not found`: a number above the head or a hash no
 	 *    block has (geth's exact wording for both).
 	 *  - REFUSED, -32602: a parameter that is not a block at all.
 	 *
 	 * THE STATE AT THE HEAD INCLUDES `evm_set*` CHEATS applied since it was mined,
-	 * exactly as `latest` always has: those mutate live state without a block.
+	 * exactly as `latest` always has: those mutate live state without a block. They
+	 * are in the OPEN record, which a read below the head consults after the sealed
+	 * ones, so they are visible at the head and at no older block.
 	 */
 	function requireHeadState(blockParam: unknown, method: string): void {
+		const number = pinnedBlockNumber(blockParam, method);
+		if (number === latestNumber) return;
+		const oldest = oldestServableBlock();
+		if (number >= oldest)
+			throw new RpcError(
+				-32000,
+				`historical state not available: ${method} was pinned to block ${number}, and this node serves ${method} at the head only ` +
+					`(block ${latestNumber}), even inside its stateHistory window (blocks ${oldest} to ${latestNumber}), where only ` +
+					`eth_getBalance, eth_getCode, eth_getStorageAt and eth_getTransactionCount are answered at a past block. ` +
+					`It REFUSES rather than answer from a later state than the one you asked for. Pin ${method} to the head (or 'latest').`,
+			);
+		throw beyondHistory(method, number, oldest);
+	}
+
+	/**
+	 * The gate for the four POINT reads: `undefined` when the parameter names the
+	 * head (read live), the block number K when it names a block in the
+	 * `stateHistory` window (read through {@link historicalValue}), and a refusal
+	 * otherwise, exactly as {@link requireHeadState} refuses.
+	 */
+	function historicalBlock(
+		blockParam: unknown,
+		method: string,
+	): number | undefined {
+		const number = pinnedBlockNumber(blockParam, method);
+		if (number === latestNumber) return undefined;
+		const oldest = oldestServableBlock();
+		if (number < oldest) throw beyondHistory(method, number, oldest);
+		// Numbering has gaps only under a `blockEnv.number` that jumps; a number
+		// between two blocks names no block, and is not answered as if it did.
+		if (!blockStore.has(number))
+			throw new RpcError(
+				-32000,
+				`header not found: ${method} was pinned to block ${number}, which this node never mined.`,
+			);
+		return number;
+	}
+
+	/**
+	 * The oldest block whose state a point read can be answered at: the head
+	 * without `stateHistory`; with it, `head - N`, but never below where the undo
+	 * log starts ({@link historyFloor}: genesis, or the head a state was loaded at).
+	 */
+	function oldestServableBlock(): number {
+		if (stateHistoryBlocks === undefined) return latestNumber;
+		return Math.max(historyFloor, latestNumber - stateHistoryBlocks, 0);
+	}
+
+	/** The refusal for a block older than {@link oldestServableBlock}. */
+	function beyondHistory(
+		method: string,
+		number: number,
+		oldest: number,
+	): RpcError {
+		const holds =
+			stateHistoryBlocks === undefined
+				? `but the oldest block whose state this node holds is block ${oldest}, its head, because it was created without stateHistory. ` +
+					`Create the node with stateHistory: {blocks: N} to keep the last N blocks readable, or pin to the head (or 'latest') instead.`
+				: `but the oldest block whose state this node holds is block ${oldest} (head ${latestNumber}, stateHistory: {blocks: ${stateHistoryBlocks}}` +
+					(oldest > latestNumber - stateHistoryBlocks
+						? `; history starts at block ${oldest}, where this node's state was loaded`
+						: '') +
+					`). Pin to a block in that window, or widen stateHistory.blocks.`;
+		return new RpcError(
+			-32000,
+			`historical state not available: ${method} was pinned to block ${number}, ${holds} ` +
+				`It REFUSES rather than answer from a later state than the one you asked for; logs and blocks remain queryable at any height.`,
+		);
+	}
+
+	/**
+	 * THE BLOCK NUMBER a state read's block parameter names (the head for a tag),
+	 * refusing what is not a block (-32602), a hash no block has and a number above
+	 * the head (-32000 `header not found`).
+	 */
+	function pinnedBlockNumber(blockParam: unknown, method: string): number {
 		if (
 			blockParam == null ||
 			blockParam === 'latest' ||
@@ -1352,7 +1551,7 @@ export async function createNodeWithInternals(
 			blockParam === 'safe' ||
 			blockParam === 'finalized'
 		)
-			return;
+			return latestNumber;
 		let number: number | undefined;
 		let hash: string | undefined;
 		if (blockParam === 'earliest') number = 0;
@@ -1376,7 +1575,7 @@ export async function createNodeWithInternals(
 				if (o.blockNumber === 'earliest') number = 0;
 				else if (/^0x[0-9a-fA-F]+$/.test(o.blockNumber))
 					number = Number(BigInt(o.blockNumber));
-				else return requireHeadState(o.blockNumber, method);
+				else return pinnedBlockNumber(o.blockNumber, method);
 			}
 		}
 		if (hash !== undefined) {
@@ -1398,17 +1597,89 @@ export async function createNodeWithInternals(
 				`invalid block parameter for ${method}: ${JSON.stringify(blockParam)}. ` +
 					`Expected a block tag (latest, pending, safe, finalized, earliest), a hex block number, a block hash, or {blockNumber}/{blockHash}.`,
 			);
-		if (number === latestNumber) return;
 		if (number > latestNumber)
 			throw new RpcError(
 				-32000,
 				`header not found: ${method} was pinned to block ${number}, but the head of this node is block ${latestNumber}.`,
 			);
-		throw new RpcError(
-			-32000,
-			`historical state not available: ${method} was pinned to block ${number}, but this node keeps only the state at its head ` +
-				`(block ${latestNumber}), so it REFUSES rather than answer from a later state than the one you asked for. ` +
-				`Pin to the head (or 'latest') instead; logs and blocks remain queryable at any height.`,
+		return number;
+	}
+
+	/**
+	 * ONE KEY'S VALUE AT THE END OF BLOCK `k` (below the head, in the window): the
+	 * FIRST record naming the key among the sealed records of blocks `k+1 .. head`
+	 * (oldest first), then the OPEN record (writes since the head was mined:
+	 * cheats, and a batch that threw mid-block), else the live value. Each record
+	 * holds a key's value from before its block, so the first one after `k` that
+	 * names the key holds its value at the end of `k`; a key no record names has
+	 * not changed since `k`, so its live value is its value then.
+	 *
+	 * A PURE LOOKUP: no state manager write, no checkpoint, and nothing an engine
+	 * sees, which is why it is safe on both engines and needs nothing from the
+	 * serialisation point beyond running inside it (the dispatcher does). `pick`
+	 * returns `{value}` when the record names the key, `undefined` when it does
+	 * not; `live` reads the head.
+	 */
+	async function historicalValue<T>(
+		k: number,
+		pick: (changes: ChangeSet) => {value: T} | undefined,
+		live: () => Promise<T>,
+	): Promise<T> {
+		for (const record of sealed) {
+			if (record.number <= k) continue;
+			const hit = pick(record.changes);
+			if (hit !== undefined) return hit.value;
+		}
+		const open = changeSets?.peekChangeSet();
+		const hit = open && pick(open);
+		if (hit !== undefined) return hit.value;
+		return live();
+	}
+
+	/** The account at `k`, `undefined` if absent: see {@link historicalValue}. */
+	function accountAt(
+		k: number,
+		address: Address,
+	): Promise<Account | undefined> {
+		const key = address.toString();
+		return historicalValue(
+			k,
+			(cs) =>
+				cs.accounts.has(key) ? {value: cs.accounts.get(key)} : undefined,
+			() => sm.getAccount(address),
+		);
+	}
+
+	/** The code at `k`, empty if none: see {@link historicalValue}. */
+	function codeAt(k: number, address: Address): Promise<Uint8Array> {
+		const key = address.toString();
+		return historicalValue(
+			k,
+			(cs) =>
+				cs.code.has(key)
+					? {value: cs.code.get(key) ?? new Uint8Array(0)}
+					: undefined,
+			() => sm.getCode(address),
+		);
+	}
+
+	/** One storage slot at `k`, empty if unset: see {@link historicalValue}. */
+	function storageAt(
+		k: number,
+		address: Address,
+		slot: Uint8Array,
+	): Promise<Uint8Array> {
+		const addressKey = packAddressKey(address.bytes);
+		const slotKey = packSlotKey(slot);
+		return historicalValue(
+			k,
+			(cs) => {
+				const slots = cs.storage.get(addressKey);
+				return slots?.has(slotKey)
+					? {value: slots.get(slotKey) ?? new Uint8Array(0)}
+					: undefined;
+			},
+			() => sm.getStorage(address, slot),
 		);
 	}
 
@@ -2115,17 +2386,24 @@ export async function createNodeWithInternals(
 				return {raw: hex(unsigned.serialize()), tx};
 			}
 
-			// EVERY state read at a block goes through `requireHeadState` first: it is
-			// served at the head and REFUSED below it, never answered from the head
-			// for a block that is not the head.
+			// EVERY state read at a block is gated first: served at the head, served
+			// from the undo log inside the `stateHistory` window (these four only,
+			// through `historicalBlock`), and REFUSED below it, never answered from the
+			// head for a block that is not the head.
 			case 'eth_getBalance': {
-				requireHeadState(params[1], 'eth_getBalance');
-				const acc = await sm.getAccount(createAddressFromString(params[0]));
+				const k = historicalBlock(params[1], 'eth_getBalance');
+				const address = createAddressFromString(params[0]);
+				const acc =
+					k === undefined
+						? await sm.getAccount(address)
+						: await accountAt(k, address);
 				return numHex(acc?.balance ?? 0n);
 			}
 			case 'eth_getTransactionCount': {
-				requireHeadState(params[1], 'eth_getTransactionCount');
+				const k = historicalBlock(params[1], 'eth_getTransactionCount');
 				const address = createAddressFromString(params[0]);
+				if (k !== undefined)
+					return numHex((await accountAt(k, address))?.nonce ?? 0n);
 				// `pending` COUNTS THE QUEUED TRANSACTIONS, the one state read where it
 				// differs from the head: a client picking a nonce asks for `pending`
 				// (viem does by default), and in manual/interval mining two sends
@@ -2138,15 +2416,22 @@ export async function createNodeWithInternals(
 				);
 			}
 			case 'eth_getCode': {
-				requireHeadState(params[1], 'eth_getCode');
-				const code = await sm.getCode(createAddressFromString(params[0]));
-				return hex(code);
+				const k = historicalBlock(params[1], 'eth_getCode');
+				const address = createAddressFromString(params[0]);
+				return hex(
+					k === undefined
+						? await sm.getCode(address)
+						: await codeAt(k, address),
+				);
 			}
 			case 'eth_getStorageAt': {
-				requireHeadState(params[2], 'eth_getStorageAt');
+				const k = historicalBlock(params[2], 'eth_getStorageAt');
 				const addr = createAddressFromString(params[0]);
 				const slot = setLengthLeft(bigIntToBytes(BigInt(params[1])), 32);
-				const val = await sm.getStorage(addr, slot);
+				const val =
+					k === undefined
+						? await sm.getStorage(addr, slot)
+						: await storageAt(k, addr, slot);
 				return hex(setLengthLeft(val, 32));
 			}
 
@@ -2570,6 +2855,10 @@ export async function createNodeWithInternals(
 		// head, so there is none to report for it either.
 		changeSets?.takeChangeSet();
 		headBlockChangeSet = undefined;
+		// ...and so is its history: the undo log described the state this load just
+		// replaced, so history starts again at the loaded head.
+		sealed.length = 0;
+		historyFloor = latestNumber;
 	}
 
 	// ---------- persistence auto-load on creation ----------
@@ -2723,6 +3012,7 @@ export async function createNodeWithInternals(
 	};
 	changeSetProbes.set(node, () => ({
 		recording: changeSets !== undefined,
+		sealedBlocks: sealed.map((r) => r.number),
 		headBlock: headBlockChangeSet,
 		open: changeSets?.peekChangeSet(),
 	}));

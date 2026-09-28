@@ -244,6 +244,37 @@ export function isEmptyChangeSet(cs: ChangeSet): boolean {
 }
 
 /**
+ * Merge `newer` INTO `older`, the OLDER entry winning for a key both name: it
+ * holds the value from before the first of the two changes, which is what a
+ * change set means. `newer` is consumed (its inner storage maps may be handed to
+ * `older` whole), so the caller must not use it afterwards.
+ *
+ * Two callers, one rule: {@link OverlayStorageStateManager.commit} merging a
+ * checkpoint level's record down, and the node sealing a block under the number
+ * of the block it replaces (`sealBlock` in ./node.ts).
+ */
+export function mergeChangeSetOlderWins(
+	older: ChangeSet,
+	newer: ChangeSet,
+): void {
+	for (const [key, value] of newer.accounts)
+		if (!older.accounts.has(key)) older.accounts.set(key, value);
+	for (const [key, value] of newer.code)
+		if (!older.code.has(key)) older.code.set(key, value);
+	for (const [addressKey, slots] of newer.storage) {
+		const target = older.storage.get(addressKey);
+		if (target === undefined) {
+			older.storage.set(addressKey, slots);
+			continue;
+		}
+		for (const [slotKey, value] of slots)
+			if (!target.has(slotKey)) target.set(slotKey, value);
+	}
+	for (const addressKey of newer.storageCleared)
+		older.storageCleared.add(addressKey);
+}
+
+/**
  * A copy of an `Account` that shares no mutable state with it: the same trick
  * `checkpointSync()` uses (upstream's, kept byte for byte), which copies the
  * instance's own fields onto a fresh object of the same prototype. The fields are
@@ -608,21 +639,7 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 			levels[belowIndex] = top;
 			return;
 		}
-		for (const [key, value] of top.accounts)
-			if (!below.accounts.has(key)) below.accounts.set(key, value);
-		for (const [key, value] of top.code)
-			if (!below.code.has(key)) below.code.set(key, value);
-		for (const [addressKey, slots] of top.storage) {
-			const target = below.storage.get(addressKey);
-			if (target === undefined) {
-				below.storage.set(addressKey, slots);
-				continue;
-			}
-			for (const [slotKey, value] of slots)
-				if (!target.has(slotKey)) target.set(slotKey, value);
-		}
-		for (const addressKey of top.storageCleared)
-			below.storageCleared.add(addressKey);
+		mergeChangeSetOlderWins(below, top);
 	}
 
 	// --- accounts and code ------------------------------------------------------

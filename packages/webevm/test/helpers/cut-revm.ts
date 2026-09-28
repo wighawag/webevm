@@ -89,6 +89,9 @@
  *   - 'change-set'  : the SHARED change-set differential (helpers/change-set.ts):
  *                      revm's synchronous writes reach the per-block record with
  *                      the same prior values the default engine's do
+ *   - 'state-history': the SHARED state-history battery (helpers/state-history.ts):
+ *                      point reads at a past block in the `stateHistory` window
+ *                      answer as that block did, with revm writing the state
  */
 import type {
 	CodeUnderTest,
@@ -109,6 +112,7 @@ import {runRevmStateRoundTrip} from './revm-state-roundtrip.js';
 import {runRevmConcurrency} from './revm-concurrency.js';
 import {runRevmRpcParams} from './revm-rpc-params.js';
 import {runRevmChangeSet} from './revm-change-set.js';
+import {runRevmStateHistory} from './revm-state-history.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {
 	runRevmPersistWrite,
@@ -306,6 +310,16 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'change-set') {
 			try {
 				results.revmChangeSet = await runRevmChangeSet();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The SHARED state-history battery, with revm installed.
+		if (ctx.params.mode === 'state-history') {
+			try {
+				results.revmStateHistory = await runRevmStateHistory();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

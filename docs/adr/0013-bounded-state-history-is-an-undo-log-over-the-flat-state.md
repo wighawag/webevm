@@ -1,0 +1,17 @@
+# Bounded state history is an undo log over the flat state
+
+A node created with `stateHistory: {blocks: N}` answers state reads pinned to any of the last N blocks below its head. **It does so from an UNDO LOG over the node's one flat state, not from retained copies of state or retained tries:** while block j is built, the state manager records, for every account, code entry and storage slot the block changes, the value it had at the END of block j-1 (the per-block change set, `src/state-manager.ts`, first write wins, checkpoint-aware). When j is mined that record is SEALED as `undo[j]`, and records at or below `head - N` are evicted, so the node holds exactly N of them. A point read of a key at block K takes the first record naming the key among `undo[K+1] .. undo[head]`, then the OPEN record (writes since the head was mined: `evm_set*` cheats, or a batch that threw mid-block), else the live value. No state manager write, no checkpoint and no engine is involved, so both engines are served alike and the read stays inside the serialisation point for free.
+
+The option is opt-in with no default window (absent means off, and a node without it pays nothing and behaves as before), and it is refused with `stateMode:'trie'`, whose `MerkleStateManager` records nothing, until trie mode runs on the flat state (spec `trie-mode-derives-its-root-from-the-flat-state`). This supersedes, in part, the "why refuse" reasoning in the JSDoc of `requireHeadState` in `src/node.ts`, which rejected history because it seemed to require retained copies or swapping a shared state manager's root under a read: an undo log needs neither. `eth_call` / `eth_estimateGas` at a past block reuse the same records as a state override inside a reverted checkpoint (task `historical-eth-call`).
+
+## Considered Options
+
+- **Per-block state snapshots** (a copy of accounts, code and storage per retained block). Rejected: O(state) memory and time per block whatever the block changed, which for an in-browser game with a large, mostly idle state is the whole cost of the feature spent on keys nobody wrote. The undo log costs O(keys the block changed).
+- **Per-block retained tries** (keep each block's Merkle root and every trie node it references). Rejected: it only exists in `'trie'` mode, which the revm engine cannot run on (ADR 0005, 0010), so it would serve one engine in one mode; a root alone answers nothing, so every old trie node would have to be kept (no pruning), and a read would mean swapping the shared state manager's root under the serialisation point.
+- **Diffing state at the end of each block** (compare the post-block state with the previous one to derive the undo record). Rejected: O(state) per block, the same whole-state cost per unit of work that ADR 0009 removed for storage checkpoints. Recording at the write, where the key is already in hand, is O(changed keys) and is the seam the trie-from-flat-state work needs anyway.
+
+## Consequences
+
+- Memory is bounded by N blocks times the keys each changed. A storage CLEAR (creation over storage, `SELFDESTRUCT`, EIP-161 removal) records every slot the account held, so it costs O(that account's slots) once.
+- A dump loaded with `loadState` is a baseline, not history: the log starts again at the loaded head until `state-history-persistence` carries the log in the dump.
+- A block mined under the number of the block it replaces (a fixed `blockEnv.number`) is merged into that block's record, the older value winning, so the log stays bounded.
