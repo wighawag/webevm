@@ -4,6 +4,7 @@ slug: state-change-set-capture
 spec: bounded-state-history
 blockedBy: []
 covers: [10, 12, 13, 14]
+needsAnswers: true
 ---
 
 ## What to build
