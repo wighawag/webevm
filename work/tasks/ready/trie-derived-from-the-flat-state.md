@@ -51,3 +51,7 @@ You are working in webevm (`packages/webevm`). Read `work/specs/tasked/trie-mode
 Goal: one state representation, a derived trie, and revm allowed in trie mode, with the roots as the bar. Do not rename `stateMode` here.
 
 Command cost rules: `timeout` in front of any shell command whose cost you have not reasoned about, cap output with `head`, never an unbounded regex over `dist`, `node_modules`, `.git` or minified files. No em dash characters. Done: acceptance criteria pass, full playwright suite green on chromium and webkit, prettier clean.
+
+## Requeue 2026-09-28
+
+Gate-3 BLOCK on PR #15 (see the PR comment). The only gap: the acceptance criterion 'the nonce and code collisions are still refused everywhere' has no CODE case. Add codeTop and codeInner to COLLISION_CASES in test/helpers/storage-collision.ts: a target with nonce 0, NO storage and non-empty code (set via evm_setCode or genesis), created over at top level and via inner CREATE2. Assert them refused exactly like the nonce cases (top level: collision, all gas consumed; inner: CREATE2 returns 0 inside a successful call) in BOTH modes and on BOTH engines, via assertStorageCollisions, and include them in the modes-agree comparison. Also fix the comment in test/slim-node-checks.spec.ts (~line 146), which claims code collisions are covered by trie-derived.spec.ts, so that it is true. Change nothing else: all other criteria were verified OK.
