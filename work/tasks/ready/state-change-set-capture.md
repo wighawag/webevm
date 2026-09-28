@@ -53,3 +53,7 @@ Goal: build the per-block OPEN RECORD of prior values described above, in the st
 Test through the node's public surface with the harness pattern in `test/helpers/cut.ts` / `cut-revm.ts` (a mode per battery, a spec per cut; see `test/rpc-params-expected.ts` for the shared-assertions shape). The record itself may be read through a test-only accessor, named as such.
 
 Command cost rules: put `timeout` in front of any shell command whose cost you have not reasoned about and cap output with `head`; never run an unbounded regex over `dist`, `node_modules`, `.git` or minified files. No em dash characters in anything you write. Done means: the acceptance criteria pass, `pnpm exec playwright test` is green on chromium and webkit, and prettier is clean.
+
+## Requeue 2026-09-28
+
+The previous build was interrupted by a host restart, not by a gate failure. The branch holds its WIP (state-manager.ts open-record + revm-state-store.ts reroute). Review it, finish the task, and make sure all acceptance criteria are covered by tests: explicit bottom-level tests for each of the five evm_set* cheats, and the snapshot differential through BOTH cut.ts and cut-revm.ts.
