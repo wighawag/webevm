@@ -4,6 +4,7 @@ slug: state-history-point-reads
 spec: bounded-state-history
 blockedBy: [state-change-set-capture]
 covers: [2, 3, 7, 8, 9, 11, 18, 21]
+needsAnswers: true
 ---
 
 ## What to build
