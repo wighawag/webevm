@@ -553,6 +553,32 @@ export interface NodeOptions {
 	 * `docs/adr/0006-the-engine-is-an-injected-object-not-a-named-string.md`.
 	 */
 	engine?: Engine;
+	/**
+	 * OPT-IN, BOUNDED STATE HISTORY. With `{blocks: N}` the node answers
+	 * `eth_getBalance`, `eth_getCode`, `eth_getStorageAt` and
+	 * `eth_getTransactionCount` pinned to any of the last N blocks below the head
+	 * (and the head) exactly as they answered when that block was the head. A
+	 * block older than `head - N` is refused with `-32000 historical state not
+	 * available`, naming the oldest block it can serve. `eth_call` and
+	 * `eth_estimateGas` are still served at the head only.
+	 *
+	 * ABSENT MEANS OFF, and there is no default window: a node without it behaves
+	 * exactly as before (the head is served, anything below it refused) and pays
+	 * nothing. `N` must be a positive safe integer; anything else throws at
+	 * construction, as does combining it with `stateMode:'trie'`.
+	 *
+	 * THE COST is memory per changed key per retained block: the node keeps, for
+	 * each of the last N blocks, the value every account, code entry and storage
+	 * slot the block changed had before it (an undo log over the one flat state).
+	 * See `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`.
+	 */
+	stateHistory?: StateHistoryOptions;
+}
+
+/** See {@link NodeOptions.stateHistory}. */
+export interface StateHistoryOptions {
+	/** How many blocks below the head stay readable: a positive safe integer. */
+	blocks: number;
 }
 
 /** A full genesis account (all fields optional except an implicit zero default). */

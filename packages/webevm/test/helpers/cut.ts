@@ -32,6 +32,11 @@
  *   - 'block-pinned-state' : a state read pinned to a block below the head is
  *                            REFUSED (never answered from the head), and one
  *                            pinned to the head by any reference still works
+ *   - 'state-history'      : with `stateHistory: {blocks: N}`, the four point
+ *                            reads at any block in the window answer as that
+ *                            block did (a snapshot differential over the
+ *                            change-set chain), beyond it they are refused, and
+ *                            exactly N records are kept. ENGINE-PARAMETERISED
  *   - 'rpc-params'         : parameters that used to be IGNORED are honoured or
  *                            refused: eth_call/eth_estimateGas state overrides
  *                            (in 'none' AND 'trie' mode), eth_getLogs blockHash,
@@ -92,6 +97,10 @@ import {
 	runChangeSetChecks,
 	runChangeSetStateManagerChecks,
 } from './change-set.js';
+import {
+	runStateHistoryChecks,
+	runStateHistoryConstructionChecks,
+} from './state-history.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -210,6 +219,19 @@ const cut: CodeUnderTest = {
 				results.changeSet = {
 					battery: await runChangeSetChecks(),
 					stateManager: await runChangeSetStateManagerChecks(),
+				};
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// state-history: point reads at a past block in the stateHistory window.
+		if (ctx.params.mode === 'state-history') {
+			try {
+				results.stateHistory = {
+					battery: await runStateHistoryChecks(),
+					construction: await runStateHistoryConstructionChecks(),
 				};
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));

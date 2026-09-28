@@ -68,7 +68,7 @@ import {
 } from './post-state.js';
 
 const account = privateKeyToAccount(PK);
-const SENDER = account.address;
+export const SENDER = account.address;
 const GENESIS_BALANCE = 10n ** 24n;
 const RECIPIENT = '0x0000000000000000000000000000000000007777';
 /** Holds storage from genesis (`initialState`), so the baseline is non-trivial. */
@@ -80,7 +80,7 @@ const REVERTER_CODE = '0x600160015560006000fd';
 const OVERRIDDEN = '0x000000000000000000000000000000000000f00d';
 const PROBE_CODE = '0x6000546000526001546020524760405260606000f3';
 
-const word = (n: number | bigint) =>
+export const word = (n: number | bigint) =>
 	'0x' + BigInt(n).toString(16).padStart(64, '0');
 
 // ------------------------------------------------------------ the views ----
@@ -243,29 +243,40 @@ function violations(
 
 // ------------------------------------------------------------- helpers ----
 
+/**
+ * The node options the chain ({@link runChangeSetChain}) is written against: the
+ * sender funded, a genesis contract holding storage, a fixed coinbase and
+ * timestamp. Exported for ./state-history.ts, which adds `stateHistory`.
+ */
+export async function chainNodeOptions(
+	makeEngine: EngineFactory | undefined,
+	extra: NodeOptions = {},
+): Promise<NodeOptions> {
+	return {
+		chainId: CHAIN_ID,
+		miningConfig: {type: 'auto'},
+		initialBalances: {[SENDER]: GENESIS_BALANCE},
+		initialState: {
+			[GENESIS_CONTRACT]: {
+				balance: 3n,
+				nonce: 1n,
+				code: '0x6001',
+				storage: {'0x1': word(0x11), '0x2': word(0x22)},
+			},
+		},
+		blockEnv: {coinbase: COINBASE, timestamp: TIMESTAMP},
+		engine: makeEngine ? await makeEngine() : undefined,
+		...extra,
+	};
+}
+
 async function recordingNode(
 	makeEngine: EngineFactory | undefined,
 	extra: NodeOptions = {},
 ): Promise<SlimNode> {
-	return createNodeWithInternals(
-		{
-			chainId: CHAIN_ID,
-			miningConfig: {type: 'auto'},
-			initialBalances: {[SENDER]: GENESIS_BALANCE},
-			initialState: {
-				[GENESIS_CONTRACT]: {
-					balance: 3n,
-					nonce: 1n,
-					code: '0x6001',
-					storage: {'0x1': word(0x11), '0x2': word(0x22)},
-				},
-			},
-			blockEnv: {coinbase: COINBASE, timestamp: TIMESTAMP},
-			engine: makeEngine ? await makeEngine() : undefined,
-			...extra,
-		},
-		{recordChangeSets: true},
-	);
+	return createNodeWithInternals(await chainNodeOptions(makeEngine, extra), {
+		recordChangeSets: true,
+	});
 }
 
 function probe(node: SlimNode): {
@@ -281,7 +292,7 @@ function probe(node: SlimNode): {
 	};
 }
 
-async function send(
+export async function send(
 	node: SlimNode,
 	nonce: number,
 	tx: {to?: string; data?: string; value?: bigint; gas: bigint},
@@ -346,31 +357,30 @@ export interface BlockCheck {
 	openEmptyAfterMining: boolean;
 }
 
-async function runDifferential(makeEngine: EngineFactory | undefined) {
-	const node = await recordingNode(makeEngine);
-	const blocks: BlockCheck[] = [];
-	const records: Record<string, ChangeSetJson | null> = {};
-	const receipts: Record<string, string> = {};
+/** What {@link runChangeSetChain} reports about the shapes it drove. */
+export interface ChainOutcome {
+	/** Receipt status per mined label (the empty block has none). */
+	receipts: Record<string, string>;
+	createdAddress: string;
+	/** Where the creation over storage was expected to land. */
+	creationAddr: string;
+	/** Where the same-transaction SELFDESTRUCT was deployed. */
+	selfdestructAddr: string;
+	/** Every address the chain names, so a reader can probe all of them. */
+	addresses: string[];
+}
 
-	let prev = await snapshot(node);
-	const afterBlock = async (label: string, blockNumber: number) => {
-		const now = await snapshot(node);
-		const p = probe(node);
-		let changed = 0;
-		for (const kind of ['accounts', 'code', 'storage'] as const)
-			for (const k of new Set([...prev[kind].keys(), ...now[kind].keys()]))
-				if ((prev[kind].get(k) ?? null) !== (now[kind].get(k) ?? null))
-					changed++;
-		blocks.push({
-			label,
-			blockNumber,
-			violations: violations(prev, now, p.headBlock),
-			changedKeys: changed,
-			openEmptyAfterMining: isEmptyJson(p.open),
-		});
-		records[label] = p.headBlock;
-		prev = now;
-	};
+/**
+ * THE CHAIN of write shapes, driven on `node` (which the caller built from
+ * {@link chainNodeOptions}), calling `afterBlock` once after every mined block.
+ * Exported so the state-history battery (./state-history.ts) runs the SAME write
+ * routes as this one rather than a second, drifting copy of them.
+ */
+export async function runChangeSetChain(
+	node: SlimNode,
+	afterBlock: (label: string, blockNumber: number) => Promise<void>,
+): Promise<ChainOutcome> {
+	const receipts: Record<string, string> = {};
 	const mined = async (label: string, r: any) => {
 		receipts[label] = String(r.status);
 		await afterBlock(label, Number(BigInt(r.blockNumber)));
@@ -416,10 +426,6 @@ async function runDifferential(makeEngine: EngineFactory | undefined) {
 		'creationOverStorage',
 		await send(node, 1, {data: `0x${CREATE_INIT}`, gas: 200_000n}),
 	);
-	const creationCleared =
-		records.creationOverStorage?.storageCleared.includes(
-			creationAddr.toLowerCase(),
-		) ?? false;
 
 	// ---- block 3: NESTED CREATION ------------------------------------------
 	await pureReads(node);
@@ -441,9 +447,6 @@ async function runDifferential(makeEngine: EngineFactory | undefined) {
 		'revertedTx',
 		await send(node, 4, {to: REVERTER, data: '0x', gas: 100_000n}),
 	);
-	const revertedSlotKeys = Object.keys(
-		records.revertedTx?.storage ?? {},
-	).filter((k) => k.startsWith(REVERTER.toLowerCase()));
 
 	// ---- block 6: EIP-161 removal of an empty account ----------------------
 	await pureReads(node);
@@ -513,6 +516,62 @@ async function runDifferential(makeEngine: EngineFactory | undefined) {
 		}),
 	);
 
+	return {
+		receipts,
+		createdAddress: String(created.contractAddress).toLowerCase(),
+		creationAddr: creationAddr.toLowerCase(),
+		selfdestructAddr: selfdestructAddr.toLowerCase(),
+		addresses: [
+			SENDER,
+			RECIPIENT,
+			GENESIS_CONTRACT,
+			REVERTER,
+			OVERRIDDEN,
+			OUTER_ADDR,
+			INNER_ADDR,
+			EMPTY_ACCOUNT,
+			COINBASE,
+			creationAddr,
+			selfdestructAddr,
+			String(created.contractAddress),
+			String(survivor.contractAddress),
+		].map((a) => a.toLowerCase()),
+	};
+}
+
+async function runDifferential(makeEngine: EngineFactory | undefined) {
+	const node = await recordingNode(makeEngine);
+	const blocks: BlockCheck[] = [];
+	const records: Record<string, ChangeSetJson | null> = {};
+
+	let prev = await snapshot(node);
+	const afterBlock = async (label: string, blockNumber: number) => {
+		const now = await snapshot(node);
+		const p = probe(node);
+		let changed = 0;
+		for (const kind of ['accounts', 'code', 'storage'] as const)
+			for (const k of new Set([...prev[kind].keys(), ...now[kind].keys()]))
+				if ((prev[kind].get(k) ?? null) !== (now[kind].get(k) ?? null))
+					changed++;
+		blocks.push({
+			label,
+			blockNumber,
+			violations: violations(prev, now, p.headBlock),
+			changedKeys: changed,
+			openEmptyAfterMining: isEmptyJson(p.open),
+		});
+		records[label] = p.headBlock;
+		prev = now;
+	};
+
+	const chain = await runChangeSetChain(node, afterBlock);
+	const creationCleared =
+		records.creationOverStorage?.storageCleared.includes(chain.creationAddr) ??
+		false;
+	const revertedSlotKeys = Object.keys(
+		records.revertedTx?.storage ?? {},
+	).filter((k) => k.startsWith(REVERTER.toLowerCase()));
+
 	// ---- and pure reads with nothing else: the open record stays EMPTY -----
 	await pureReads(node);
 	const openAfterPureReads = probe(node).open;
@@ -522,14 +581,13 @@ async function runDifferential(makeEngine: EngineFactory | undefined) {
 	return {
 		engineId: node.engine.id,
 		blocks,
-		receipts,
-		createdAddress: String(created.contractAddress).toLowerCase(),
-		expectedCreationAddress: creationAddr.toLowerCase(),
+		receipts: chain.receipts,
+		createdAddress: chain.createdAddress,
+		expectedCreationAddress: chain.creationAddr,
 		creationCleared,
 		selfdestructCleared:
-			records.selfdestruct?.storageCleared.includes(
-				selfdestructAddr.toLowerCase(),
-			) ?? false,
+			records.selfdestruct?.storageCleared.includes(chain.selfdestructAddr) ??
+			false,
 		revertedSlotKeys,
 		overriddenInAnyRecord: Object.values(records).some(
 			(r) =>
