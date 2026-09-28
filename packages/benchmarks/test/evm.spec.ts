@@ -92,6 +92,18 @@ const collected: Record<string, unknown>[] = [];
  *
  * RE-PINNED SIXTEEN TIMES SINCE. Most recent first:
  *
+ * 436.3 -> 439.2 KB raw / 131.4 -> 132.3 KB gzip, by `state-history-point-reads`:
+ * the opt-in `stateHistory: {blocks: N}` option, which serves `eth_getBalance`,
+ * `eth_getCode`, `eth_getStorageAt` and `eth_getTransactionCount` at any of the
+ * last N blocks from an undo log of sealed change sets (ADR 0013). The 2.9 KB is
+ * in `src/node.ts` (option validation and its refusals, sealing and eviction in
+ * `executeAndMine`, the `historicalBlock` gate split out of `requireHeadState`,
+ * the per-key history lookups, and the refusal prose naming the oldest servable
+ * block) plus `mergeChangeSetOlderWins`, factored out of the checkpoint commit in
+ * `src/state-manager.ts`. It is in the CORE graph because the option is on
+ * `createNode` for the default `stateMode:'none'`; off by default, a node without
+ * it seals nothing. Still zero bytes of `revm-wasm`.
+ *
  * 432.0 -> 436.3 KB raw / 130.3 -> 131.4 KB gzip, by `state-change-set-capture`:
  * the node can record a per-block CHANGE SET (every account, code entry and
  * storage slot a block changed, with its value at the end of the block before),
@@ -364,7 +376,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 436.3, gzipKB: 131.4};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 439.2, gzipKB: 132.3};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
