@@ -93,6 +93,8 @@ const node = await createWorkerNode({worker, chainId: 31337, miningConfig: {type
 // with the SAME viem client code as the main-thread node.
 ```
 
+**Errors cross whole.** A worker-hosted node rejects with the same `RpcError` a main-thread node does: same `code`, `message` and `data`, and `instanceof RpcError` on the main thread. So a revert's `data` reaches viem, which decodes it into your contract's custom error exactly as it would on the main thread. (comlink alone carries only an error's message; the worker host sends an `RpcError` across as a plain `{code, message, data}` object and the client rebuilds it, without touching comlink's global transfer handlers.) Any other error arrives as comlink delivers it: an `Error` with its message.
+
 ### A Worker that builds its own engine
 
 `worker-entry` exposes the node the moment it is imported, which is what makes

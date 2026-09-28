@@ -90,6 +90,9 @@
  *   - 'state-history-transports': with `stateHistory`, historical reads through
  *                            a worker-hosted node and over `serveOn` ports
  *                            answer exactly as `node.request` does
+ *   - 'worker-rpc-errors'  : a worker-hosted node rejects with the SAME
+ *                            `RpcError` (code, message, data) as a main-thread
+ *                            node, and a plain `Error` still crosses as one
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -124,6 +127,7 @@ import {
 import {runHistoricalCallChecks} from './historical-call.js';
 import {runStateHistoryPersistenceChecks} from './state-history-persistence.js';
 import {runStateHistoryTransportChecks} from './state-history-transports.js';
+import {runWorkerRpcErrorChecks} from './worker-rpc-errors.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -484,6 +488,19 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'state-history-transports') {
 			try {
 				results.transports = await runStateHistoryTransportChecks(
+					String(ctx.params.workerUrl),
+				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// worker-rpc-errors: every refusal a worker-hosted node raises reaches the
+		// main thread as the RpcError a main-thread node raises.
+		if (ctx.params.mode === 'worker-rpc-errors') {
+			try {
+				results.errors = await runWorkerRpcErrorChecks(
 					String(ctx.params.workerUrl),
 				);
 			} catch (e) {

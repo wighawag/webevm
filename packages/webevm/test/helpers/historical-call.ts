@@ -550,6 +550,15 @@ async function runReconstruction(makeEngine: EngineFactory | undefined) {
  * at `block`. Exported for ./state-history-persistence.ts, which asks the same
  * questions of a node before and after a dump / load.
  */
+/**
+ * A refusal, by code AND message, the way ./state-history.ts's `readAll` writes
+ * one, so a transport that loses the code (as a worker node's comlink boundary
+ * once did) reads as a different answer rather than as the same one.
+ */
+function refusalText(e: unknown): string {
+	return `ERROR ${(e as {code?: unknown})?.code} ${String((e as Error)?.message ?? e)}`;
+}
+
 export async function executeAll(
 	node: SlimNode,
 	addresses: string[],
@@ -561,7 +570,7 @@ export async function executeAll(
 		try {
 			out[`account ${a}`] = JSON.stringify(await accountByCall(node, a, block));
 		} catch (e) {
-			out[`account ${a}`] = `ERROR ${String((e as Error).message)}`;
+			out[`account ${a}`] = refusalText(e);
 		}
 	}
 	for (const k of slots) {
@@ -569,7 +578,7 @@ export async function executeAll(
 		try {
 			out[`storage ${k}`] = await slotByCall(node, a, s, block);
 		} catch (e) {
-			out[`storage ${k}`] = `ERROR ${String((e as Error).message)}`;
+			out[`storage ${k}`] = refusalText(e);
 		}
 	}
 	return out;

@@ -106,11 +106,6 @@ export interface StateHistoryTransportsReport {
 	/** Reference answers that were served / refused, over all K. */
 	served: number;
 	refused: number;
-	/**
-	 * Refusals that reached the `worker` transport without their `code` (the
-	 * comlink gap described at the comparison); the message still matched.
-	 */
-	workerCodesLost: number;
 	/** Blocks in the window, below the head, whose answers differ from the head's. */
 	historicalBlocksThatDiffer: number;
 	/** The reference's refusal of the first block beyond the window. */
@@ -187,7 +182,6 @@ export async function runStateHistoryTransportChecks(
 		let questions = 0;
 		let served = 0;
 		let refused = 0;
-		let workerCodesLost = 0;
 		const atHead = new Map<string, Record<string, unknown>>();
 		const byK = new Map<number, Record<string, unknown>>();
 		// Each node's OWN hash for block k: genesis is stamped with the wall clock,
@@ -223,26 +217,8 @@ export async function runStateHistoryTransportChecks(
 						refs[name as keyof typeof refs],
 					);
 					for (const key of Object.keys(expected)) {
-						let e = expected[key];
-						let g = got[key];
-						// KNOWN GAP, not this feature's: comlink carries a thrown Error's
-						// message but not its `code` (see
-						// work/notes/observations/comlink-drops-the-rpc-error-code.md),
-						// so through `createWorkerNode` a refusal arrives as
-						// `ERROR undefined <message>`. The message is compared; the lost
-						// codes are counted and reported.
-						if (t === 'worker' && typeof g === 'string' && g !== e) {
-							const strip = (v: unknown) =>
-								String(v).replace(/^ERROR \S+ /, 'ERROR ');
-							if (
-								String(e).startsWith('ERROR') &&
-								g.startsWith('ERROR undefined ') &&
-								strip(e) === strip(g)
-							) {
-								workerCodesLost++;
-								e = g;
-							}
-						}
+						const e = expected[key];
+						const g = got[key];
 						if (e !== g)
 							mismatches[t].push(
 								`block ${k} by ${name}: ${key}: expected ${e}, got ${g}`,
@@ -269,7 +245,6 @@ export async function runStateHistoryTransportChecks(
 			questions,
 			served,
 			refused,
-			workerCodesLost,
 			historicalBlocksThatDiffer,
 			beyondWindowRefusal,
 			mismatches: {

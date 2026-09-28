@@ -47,6 +47,7 @@
 import {expose, proxy} from 'comlink';
 import {createNode} from './node.js';
 import type {Engine, NodeOptions, SlimNode} from './types.js';
+import {sendingRpcErrors} from './worker-rpc-error.js';
 
 /**
  * Builds the {@link Engine} for ONE node, on the thread that will run it.
@@ -94,14 +95,21 @@ export interface WorkerHostOptions {
  * nothing now and stops the one thing the guarantee otherwise missed. The plain
  * values (`computeStateRoot`, `senderMode`, `engine`) clone across as-is; the client
  * reads them off the remote as promises.
+ *
+ * EVERY ASYNC METHOD IS WRAPPED IN {@link sendingRpcErrors}, so an `RpcError` it
+ * throws crosses with its `code` and `data` (comlink alone keeps only the
+ * message; `./worker-rpc-error.ts` has why, and why this is not a comlink
+ * transfer handler). All of them, not only `request`: `getStateRoot` raises
+ * `-32004`, and a method that raises none today costs nothing to cover.
+ * `onNewHead` is the exception because it is synchronous and throws nothing.
  */
 function nodeProxy(node: SlimNode): SlimNode {
 	const forwarded: Required<SlimNode> = {
-		request: (args) => node.request(args),
-		mine: () => node.mine(),
-		dumpState: () => node.dumpState(),
-		loadState: (state) => node.loadState(state),
-		getStateRoot: () => node.getStateRoot(),
+		request: sendingRpcErrors((args) => node.request(args)),
+		mine: sendingRpcErrors(() => node.mine()),
+		dumpState: sendingRpcErrors(() => node.dumpState()),
+		loadState: sendingRpcErrors((state) => node.loadState(state)),
+		getStateRoot: sendingRpcErrors(() => node.getStateRoot()),
 		computeStateRoot: node.computeStateRoot,
 		senderMode: node.senderMode,
 		engine: node.engine,
@@ -112,8 +120,8 @@ function nodeProxy(node: SlimNode): SlimNode {
 		// thread's: the node serves it right here, and a consumer holding the other
 		// end talks to this worker directly. The handle going back carries a
 		// function, so it crosses as a proxy, like the unsubscribe above.
-		serveOn: async (port) => proxy(await node.serveOn(port)),
-		dispose: () => node.dispose(),
+		serveOn: sendingRpcErrors(async (port) => proxy(await node.serveOn(port))),
+		dispose: sendingRpcErrors(() => node.dispose()),
 	};
 	return forwarded;
 }
