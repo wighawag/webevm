@@ -37,10 +37,16 @@ import {createVM, type VM} from '@ethereumjs/vm';
 import {MerkleStateManager} from '@ethereumjs/statemanager';
 import {
 	OverlayStorageStateManager,
+	copyAccount,
 	mergeChangeSetOlderWins,
 	type ChangeSet,
 } from './state-manager.js';
-import {packAddressKey, packSlotKey} from './storage-keys.js';
+import {
+	packAddressKey,
+	packSlotKey,
+	unpackAddressKey,
+	unpackSlotKey,
+} from './storage-keys.js';
 import {Common, Mainnet, Hardfork} from '@ethereumjs/common';
 import {createBlock, type Block} from '@ethereumjs/block';
 import {createTxFromRLP, createTx, type TypedTransaction} from '@ethereumjs/tx';
@@ -269,6 +275,32 @@ interface StoredBlock {
  * been delivered to whoever awaited that request.
  */
 function swallow(): void {}
+
+/**
+ * ONE ACCOUNT'S WORTH OF STATE TO WRITE into the checkpoint a pure read opens
+ * (`withStateEntries` in {@link createNodeWithInternals}), already parsed so it
+ * cannot fail to apply. Two producers, one apply step (`applyStateEntry`):
+ * the geth-style state overrides of `eth_call` / `eth_estimateGas`
+ * (`parseStateOverrides`), and block K's state for a call pinned to K
+ * (`historicalEntries`, from the `stateHistory` undo log). INTERNAL: not RPC
+ * JSON, and not exported.
+ */
+interface StateEntry {
+	readonly address: Address;
+	/** The address's code; written FIRST (it rewrites, or creates, the account). */
+	code?: Uint8Array;
+	/** A WHOLE account (history), replacing whatever is there. */
+	account?: Account;
+	/** Override fields, a read-modify-write on the account. */
+	balance?: bigint;
+	nonce?: bigint;
+	/** Clear the account's storage before `slots` are written. */
+	clearStorage: boolean;
+	/** Slot writes, keys 32 bytes, values in shortest form. */
+	slots: {key: Uint8Array; value: Uint8Array}[];
+	/** The account is ABSENT: emptied code, then deleted, as the LAST step. */
+	absent: boolean;
+}
 
 /**
  * ONE SUBMITTED TRANSACTION, as the node carries it from `eth_sendRawTransaction*`
@@ -1396,11 +1428,12 @@ export async function createNodeWithInternals(
 	}
 
 	/**
-	 * REFUSE A STATE READ PINNED TO A BLOCK WHOSE STATE THIS NODE DOES NOT HOLD,
-	 * instead of answering it from the head. Every method that reads STATE at a
-	 * block (`eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`,
-	 * `eth_getStorageAt`, `eth_getTransactionCount`) calls this, or
-	 * {@link historicalBlock} which extends it, with its block parameter BEFORE
+	 * THE GATE FOR EVERY STATE READ AT A BLOCK: `undefined` when the parameter
+	 * names the head (read or execute live), the block number K when it names a
+	 * block in the `stateHistory` window (served from the undo log), and a refusal
+	 * otherwise. Every method that reads STATE at a block (`eth_call`,
+	 * `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`,
+	 * `eth_getTransactionCount`) calls this with its block parameter BEFORE
 	 * touching state.
 	 *
 	 * ## Why this exists
@@ -1411,7 +1444,8 @@ export async function createNodeWithInternals(
 	 * (logs up to block N, and a view call at block N) got logs as of N and storage
 	 * as of the head: a position whose move it could not find, with no error. That is
 	 * a different answer from every other node, delivered silently, which is the one
-	 * outcome that is not acceptable.
+	 * outcome that is not acceptable. (This gate was `requireHeadState` while the
+	 * node served the head only.)
 	 *
 	 * ## What the node holds: the head, plus an OPT-IN undo log
 	 *
@@ -1424,19 +1458,15 @@ export async function createNodeWithInternals(
 	 * WITH `stateHistory: {blocks: N}` the node keeps, per mined block, the value
 	 * every key the block changed had BEFORE it (the sealed change sets, an undo
 	 * log over the one flat state; see
-	 * `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`),
-	 * and the four POINT
-	 * reads at a block K in the window are answered from it by
+	 * `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`).
+	 * The four POINT reads at a block K in the window are answered from it by
 	 * {@link historicalValue} with no state manager involvement and no checkpoint.
-	 * That SUPERSEDES the reasoning this comment used to give for refusing all
-	 * history (retained copies, or swapping a shared state manager's root under a
-	 * read): an undo log needs neither, and a point read never touches the engine,
-	 * so both engines are served alike.
-	 *
-	 * `eth_call` AND `eth_estimateGas` STAY AT THE HEAD even inside the window, and
-	 * this function is their gate: executing at K needs K's state under an ENGINE,
-	 * which is the `historical-eth-call` task (the same records applied through the
-	 * state-override checkpoint). Their refusal says so.
+	 * `eth_call` and `eth_estimateGas` at K EXECUTE: the same records, as K's
+	 * state, are written into a checkpoint the request opens and reverts
+	 * ({@link historicalEntries}, {@link withStateEntries}), and the engine runs
+	 * with K's stored `Block`. That SUPERSEDES the reasoning this comment used to
+	 * give for refusing all history (retained copies, or swapping a shared state
+	 * manager's root under a read): an undo log needs neither.
 	 *
 	 * ## What is served, and what is refused
 	 *
@@ -1449,44 +1479,22 @@ export async function createNodeWithInternals(
 	 *    exception is `eth_getTransactionCount`, which adds the sender's queued
 	 *    transactions so that two sends before a mine get two nonces. `safe` and
 	 *    `finalized` are the head because a local chain has no reorgs.) `earliest`
-	 *    is served while block 0 is the head or, for a point read, in the window.
-	 *  - SERVED FROM HISTORY (point reads only): any block from
-	 *    {@link oldestServableBlock} up to the head, named any of those ways.
+	 *    is served while block 0 is the head or in the window.
+	 *  - SERVED FROM HISTORY: any block from {@link oldestServableBlock} up to the
+	 *    head, named any of those ways, by all six methods.
 	 *  - REFUSED, -32000 `historical state not available`: a block below the oldest
 	 *    servable one (with no `stateHistory`, that is every block below the head),
 	 *    with a message naming the oldest servable block and the `stateHistory`
 	 *    option. The same code geth uses for pruned state (`missing trie node`).
-	 *    `eth_call` / `eth_estimateGas` below the head, window or not, get the same
-	 *    code and a message saying they are served at the head only.
-	 *  - REFUSED, -32000 `header not found`: a number above the head or a hash no
-	 *    block has (geth's exact wording for both).
+	 *  - REFUSED, -32000 `header not found`: a number above the head, a hash no
+	 *    block has (geth's exact wording for both), or a number between two blocks
+	 *    of a chain whose numbering jumps.
 	 *  - REFUSED, -32602: a parameter that is not a block at all.
 	 *
 	 * THE STATE AT THE HEAD INCLUDES `evm_set*` CHEATS applied since it was mined,
 	 * exactly as `latest` always has: those mutate live state without a block. They
 	 * are in the OPEN record, which a read below the head consults after the sealed
 	 * ones, so they are visible at the head and at no older block.
-	 */
-	function requireHeadState(blockParam: unknown, method: string): void {
-		const number = pinnedBlockNumber(blockParam, method);
-		if (number === latestNumber) return;
-		const oldest = oldestServableBlock();
-		if (number >= oldest)
-			throw new RpcError(
-				-32000,
-				`historical state not available: ${method} was pinned to block ${number}, and this node serves ${method} at the head only ` +
-					`(block ${latestNumber}), even inside its stateHistory window (blocks ${oldest} to ${latestNumber}), where only ` +
-					`eth_getBalance, eth_getCode, eth_getStorageAt and eth_getTransactionCount are answered at a past block. ` +
-					`It REFUSES rather than answer from a later state than the one you asked for. Pin ${method} to the head (or 'latest').`,
-			);
-		throw beyondHistory(method, number, oldest);
-	}
-
-	/**
-	 * The gate for the four POINT reads: `undefined` when the parameter names the
-	 * head (read live), the block number K when it names a block in the
-	 * `stateHistory` window (read through {@link historicalValue}), and a refusal
-	 * otherwise, exactly as {@link requireHeadState} refuses.
 	 */
 	function historicalBlock(
 		blockParam: unknown,
@@ -1794,24 +1802,100 @@ export async function createNodeWithInternals(
 	}
 
 	/**
-	 * RUN A READ AGAINST THE HEAD STATE WITH geth-STYLE STATE OVERRIDES APPLIED, and
-	 * leave no trace of them. `eth_call` and `eth_estimateGas` take them as their
-	 * third parameter: `{[address]: {balance?, nonce?, code?, state?, stateDiff?}}`,
-	 * where `state` REPLACES the account's whole storage and `stateDiff` patches
-	 * individual slots. They used to be ignored, which answered a question the
-	 * caller had not asked, with no error.
+	 * K'S STATE, AS STATE ENTRIES: for every key the undo log names after block
+	 * `k` (the sealed records of blocks `k+1 .. head`, then the OPEN record), the
+	 * value it had at the end of `k`, the earliest record winning per key, exactly
+	 * the lookup {@link historicalValue} makes for one key. A key no record names
+	 * has not changed since `k`, so the live state already holds it and it needs
+	 * no entry. O(keys changed since `k`), which is the cost of a historical
+	 * `eth_call` on top of the call itself.
 	 *
-	 * ## Why a checkpoint here is safe, given the hazard documented at `serialise`
+	 * Written into a checkpoint by {@link withStateEntries}, so the engine
+	 * executes on K's state with no copy of state and no root swapped. An account
+	 * absent at `k` becomes an ABSENT entry, and an account whose storage was
+	 * cleared after `k` becomes a `clearStorage` entry: the clear recorded every
+	 * slot the account held at that moment, so the union holds every slot it
+	 * held at `k`, and clearing first also drops the slots written since.
 	 *
-	 * The corruption described there needs two executions to interleave on the one
-	 * checkpoint stack. This level is opened and closed by the SAME request, inside
-	 * the serialisation point, with the read nested strictly inside it: the default
-	 * engine's own checkpoint/revert lands on top of this one and pops before this
-	 * one does, and revm reads the top of the stack on every access and never
-	 * commits. So the stack is `[base, overrides, (call)]` and unwinds in order.
-	 * It is also the same mechanism `evmCall` already relies on for purity, one
-	 * level lower. In `'trie'` mode `MerkleStateManager.revert()` reverts the account
-	 * trie and drops its storage-trie cache, so a replaced storage does not leak.
+	 * THE UNION IS BUILT FRESH. `mergeChangeSetOlderWins` is not reused here
+	 * because it CONSUMES its second argument (inner storage maps are handed over
+	 * whole), and these are the sealed records themselves, which a later read
+	 * still needs intact.
+	 */
+	function historicalEntries(k: number): StateEntry[] {
+		const accounts = new Map<string, Account | undefined>();
+		const code = new Map<string, Uint8Array | undefined>();
+		const storage = new Map<string, Map<string, Uint8Array | undefined>>();
+		const cleared = new Set<string>();
+		const take = (cs: ChangeSet) => {
+			for (const [key, value] of cs.accounts)
+				if (!accounts.has(key)) accounts.set(key, value);
+			for (const [key, value] of cs.code)
+				if (!code.has(key)) code.set(key, value);
+			for (const [addressKey, slots] of cs.storage) {
+				let target = storage.get(addressKey);
+				if (target === undefined) {
+					target = new Map();
+					storage.set(addressKey, target);
+				}
+				for (const [slotKey, value] of slots)
+					if (!target.has(slotKey)) target.set(slotKey, value);
+			}
+			for (const addressKey of cs.storageCleared) cleared.add(addressKey);
+		};
+		for (const record of sealed) if (record.number > k) take(record.changes);
+		const open = changeSets?.peekChangeSet();
+		if (open) take(open);
+
+		// One entry per address, keyed as `address.toString()` gives it (the
+		// account and code maps' key; `unpackAddressKey` yields the same form).
+		const entries = new Map<string, StateEntry>();
+		const entry = (key: string): StateEntry => {
+			let e = entries.get(key);
+			if (e === undefined) {
+				e = {
+					address: createAddressFromString(key),
+					clearStorage: false,
+					slots: [],
+					absent: false,
+				};
+				entries.set(key, e);
+			}
+			return e;
+		};
+		for (const [key, account] of accounts) {
+			const e = entry(key);
+			if (account === undefined) e.absent = true;
+			// A COPY: the engine is handed the object through the state manager, and
+			// the sealed record must go on saying what the account was.
+			else e.account = copyAccount(account);
+		}
+		for (const [key, value] of code)
+			entry(key).code = value ?? new Uint8Array(0);
+		for (const addressKey of cleared)
+			entry(unpackAddressKey(addressKey)).clearStorage = true;
+		for (const [addressKey, slots] of storage) {
+			const e = entry(unpackAddressKey(addressKey));
+			for (const [slotKey, value] of slots)
+				e.slots.push({
+					key: hexToBytes(unpackSlotKey(slotKey)),
+					value: value ?? new Uint8Array(0),
+				});
+		}
+		return [...entries.values()];
+	}
+
+	/**
+	 * PARSE geth-STYLE STATE OVERRIDES into {@link StateEntry}s. `eth_call` and
+	 * `eth_estimateGas` take them as their third parameter:
+	 * `{[address]: {balance?, nonce?, code?, state?, stateDiff?}}`, where `state`
+	 * REPLACES the account's whole storage and `stateDiff` patches individual
+	 * slots. They used to be ignored, which answered a question the caller had not
+	 * asked, with no error.
+	 *
+	 * PARSED BEFORE ANY LEVEL IS OPENED, into values that cannot fail to apply, so
+	 * a malformed override is a -32602 naming it (never a raw `SyntaxError` from
+	 * `BigInt`), and a refusal never has a half-applied override to unwind.
 	 *
 	 * ## What is refused
 	 *
@@ -1819,12 +1903,11 @@ export async function createNodeWithInternals(
 	 * field this node does not implement (`movePrecompileToAddress`, for one): a
 	 * -32602 naming it, never a call run without it.
 	 */
-	async function withStateOverrides<T>(
+	function parseStateOverrides(
 		overrides: unknown,
 		method: string,
-		read: () => Promise<T>,
-	): Promise<T> {
-		if (overrides == null) return read();
+	): StateEntry[] {
+		if (overrides == null) return [];
 		if (typeof overrides !== 'object' || Array.isArray(overrides))
 			throw new RpcError(
 				-32602,
@@ -1837,10 +1920,6 @@ export async function createNodeWithInternals(
 			'state',
 			'stateDiff',
 		]);
-		// PARSE EVERYTHING BEFORE OPENING THE LEVEL, into values that cannot fail to
-		// apply, so a malformed override is a -32602 naming it (never a raw
-		// `SyntaxError` from `BigInt`), and a refusal never has a half-applied
-		// override to unwind.
 		const bad = (what: string): never => {
 			throw new RpcError(
 				-32602,
@@ -1860,8 +1939,8 @@ export async function createNodeWithInternals(
 				return bad(`${what} must be even-length hex, got ${JSON.stringify(v)}`);
 			return hexToBytes(v);
 		};
-		const parsed = Object.entries(overrides as Record<string, any>).map(
-			([addr, o]) => {
+		return Object.entries(overrides as Record<string, any>).map(
+			([addr, o]): StateEntry => {
 				if (o == null || typeof o !== 'object' || Array.isArray(o))
 					return bad(`the override for ${addr} must be an object`);
 				for (const k of Object.keys(o))
@@ -1915,32 +1994,86 @@ export async function createNodeWithInternals(
 					nonce:
 						o.nonce != null ? quantity(o.nonce, `${addr}.nonce`) : undefined,
 					code: o.code != null ? data(o.code, `${addr}.code`) : undefined,
-					replaceStorage: o.state != null,
+					clearStorage: o.state != null,
 					slots,
+					absent: false,
 				};
 			},
 		);
+	}
+
+	/**
+	 * RUN A READ WITH STATE ENTRIES WRITTEN INTO A CHECKPOINT IT OPENS, and leave
+	 * no trace of them. The entries are K's state for a historical call
+	 * ({@link historicalEntries}) followed by the caller's state overrides
+	 * ({@link parseStateOverrides}), so the overrides land ON TOP of K's state,
+	 * as geth applies them on top of the block's. With no entries (a call at the
+	 * head without overrides) no level is opened at all.
+	 *
+	 * ## Why a checkpoint here is safe, given the hazard documented at `serialise`
+	 *
+	 * The corruption described there needs two executions to interleave on the one
+	 * checkpoint stack. This level is opened and closed by the SAME request, inside
+	 * the serialisation point, with the read nested strictly inside it: the default
+	 * engine's own checkpoint/revert lands on top of this one and pops before this
+	 * one does, and revm reads the top of the stack on every access and never
+	 * commits. So the stack is `[base, entries, (call)]` and unwinds in order,
+	 * whether the read returns, reverts or throws (the `finally`). It is also the
+	 * same mechanism `evmCall` already relies on for purity, one level lower. In
+	 * `'trie'` mode `MerkleStateManager.revert()` reverts the account trie and
+	 * drops its storage-trie cache, so a replaced storage does not leak.
+	 */
+	async function withStateEntries<T>(
+		entries: readonly StateEntry[],
+		read: () => Promise<T>,
+	): Promise<T> {
+		if (entries.length === 0) return read();
 		await sm.checkpoint();
 		try {
-			for (const o of parsed) {
-				// ORDER MATTERS: account fields first (read-modify-write), then code
-				// (which rewrites the account's codeHash), then storage (which, in trie
-				// mode, rewrites its storageRoot). Each step re-reads the account, so no
-				// step writes back a stale copy over the previous one.
-				if (o.balance !== undefined || o.nonce !== undefined) {
-					const acc = (await sm.getAccount(o.address)) ?? new Account();
-					if (o.balance !== undefined) acc.balance = o.balance;
-					if (o.nonce !== undefined) acc.nonce = o.nonce;
-					await sm.putAccount(o.address, acc);
-				}
-				if (o.code !== undefined) await sm.putCode(o.address, o.code);
-				if (o.replaceStorage) await sm.clearStorage(o.address);
-				for (const {key, value} of o.slots)
-					await sm.putStorage(o.address, key, value);
-			}
+			for (const e of entries) await applyStateEntry(e);
 			return await read();
 		} finally {
 			await sm.revert();
+		}
+	}
+
+	/**
+	 * WRITE ONE {@link StateEntry} into the top level. The ONE apply step shared by
+	 * the RPC override path and the historical path.
+	 *
+	 * ORDER MATTERS, and each step re-reads the account so no step writes back a
+	 * stale copy over the previous one:
+	 *
+	 *  1. CODE FIRST. `putCode` rewrites the account's `codeHash`, and in `'none'`
+	 *     mode CREATES an empty account when there is none, so it must come before
+	 *     anything that states the account.
+	 *  2. THE ACCOUNT: a whole account replaces what `putCode` left (its `codeHash`
+	 *     is K's own), and `balance` / `nonce` are a read-modify-write on top.
+	 *  3. STORAGE: a clear, then the slots (in trie mode a slot write rewrites the
+	 *     account's `storageRoot`, so it comes after the account).
+	 *  4. ABSENT LAST: an empty code entry, then `deleteAccount`. The account must
+	 *     read as ABSENT, not as a zero account, and two upstream behaviours stand
+	 *     in the way: `putCode` creates an account (so the code is emptied BEFORE
+	 *     the delete), and `deleteAccount` leaves the address's code in the code
+	 *     map, where `eth_getCode` and the default engine's `EXTCODESIZE` would
+	 *     still see it (so the code is emptied at all). `deleteAccount` also clears
+	 *     the storage in `'none'` mode.
+	 */
+	async function applyStateEntry(e: StateEntry): Promise<void> {
+		if (e.code !== undefined) await sm.putCode(e.address, e.code);
+		if (e.account !== undefined) await sm.putAccount(e.address, e.account);
+		if (e.balance !== undefined || e.nonce !== undefined) {
+			const acc = (await sm.getAccount(e.address)) ?? new Account();
+			if (e.balance !== undefined) acc.balance = e.balance;
+			if (e.nonce !== undefined) acc.nonce = e.nonce;
+			await sm.putAccount(e.address, acc);
+		}
+		if (e.clearStorage) await sm.clearStorage(e.address);
+		for (const {key, value} of e.slots)
+			await sm.putStorage(e.address, key, value);
+		if (e.absent) {
+			await sm.putCode(e.address, new Uint8Array(0));
+			await sm.deleteAccount(e.address);
 		}
 	}
 
@@ -1970,9 +2103,18 @@ export async function createNodeWithInternals(
 	 * `@ethereumjs/evm` engine checkpoints/reverts and resets EIP-2929 warmth
 	 * because that EVM requires it; an engine that cannot commit pays for neither.
 	 * See ./engine.ts.
+	 *
+	 * `block` is the block the call executes IN: the head's for a call at the
+	 * head, block K's stored `Block` for a call pinned to K, so `NUMBER`,
+	 * `TIMESTAMP`, `COINBASE`, `PREVRANDAO`, `BASEFEE` and `GASLIMIT` are K's. It
+	 * also bounds `BLOCKHASH`: both engines answer zero for any number at or above
+	 * the block's own, so a call at K cannot see the hash of K or of anything
+	 * after it without any further mechanism (measured on both engines by
+	 * `test/historical-call.spec.ts` and its revm twin).
 	 */
 	async function evmCall(
 		params: any,
+		block: Block,
 		budget?: bigint,
 	): Promise<ReadCallResult> {
 		const from = params.from
@@ -2020,7 +2162,7 @@ export async function createNodeWithInternals(
 			data,
 			value,
 			gasLimit,
-			block: blockStore.get(latestNumber)!.block,
+			block,
 		});
 	}
 
@@ -2095,7 +2237,7 @@ export async function createNodeWithInternals(
 	 * points callers HERE for "the number a transaction needs", so the node must
 	 * never refuse a limit it has just recommended.
 	 */
-	async function estimateGas(p: any): Promise<bigint> {
+	async function estimateGas(p: any, block: Block): Promise<bigint> {
 		const dataHex: string = p.data ?? p.input ?? '0x';
 		const isCreate = !p.to;
 		const overhead =
@@ -2107,6 +2249,11 @@ export async function createNodeWithInternals(
 		// back a number it will not accept. `gas` on an `eth_estimateGas` request is
 		// geth's cap on the SEARCH ("do not consider limits above this"), which is a
 		// different thing from `gas` on an `eth_call` ("let it run this long").
+		//
+		// AT A PAST BLOCK K THE CAP IS STILL THIS ONE, not K's own `gasLimit`,
+		// deliberately (historical-eth-call): the number is for a transaction to be
+		// SUBMITTED now, and what it meets is the limit of the blocks this node
+		// mines, whatever K's was. `block` only decides what the probes execute in.
 		const supplied = p.gas != null ? BigInt(p.gas) : undefined;
 		const cap =
 			supplied === undefined || supplied > minedBlockGasLimit
@@ -2130,7 +2277,7 @@ export async function createNodeWithInternals(
 			);
 		}
 
-		const probe = (limit: bigint) => evmCall(p, limit - overhead);
+		const probe = (limit: bigint) => evmCall(p, block, limit - overhead);
 
 		// 1) THE UPPER BOUND, run first: a request that cannot succeed with all the
 		// gas there is cannot succeed at all, and the caller learns that here rather
@@ -2267,32 +2414,47 @@ export async function createNodeWithInternals(
 				return sb ? blockToRpc(sb, Boolean(params[1])) : null;
 			}
 
+			// AT THE HEAD OR AT A BLOCK K IN THE `stateHistory` WINDOW, through the one
+			// gate every state read uses (`historicalBlock`). At K the engine runs with
+			// K's stored `Block` on K's state, written into a checkpoint the request
+			// opens and reverts (`historicalEntries`, `withStateEntries`), with the
+			// caller's state overrides applied ON TOP of it.
 			case 'eth_call': {
-				requireHeadState(params[1], 'eth_call');
+				const k = historicalBlock(params[1], 'eth_call');
 				refuseBlockOverrides(params[3], 'eth_call');
+				const entries = [
+					...(k === undefined ? [] : historicalEntries(k)),
+					...parseStateOverrides(params[2], 'eth_call'),
+				];
+				const block = blockStore.get(k ?? latestNumber)!.block;
 				const r = await pureRead(() =>
-					withStateOverrides(params[2], 'eth_call', () =>
-						evmCall(params[0] ?? {}),
-					),
+					withStateEntries(entries, () => evmCall(params[0] ?? {}, block)),
 				);
 				if (r.error)
 					throw new RpcError(3, 'execution reverted', hex(r.returnValue));
 				return hex(r.returnValue);
 			}
-			case 'eth_estimateGas':
+			case 'eth_estimateGas': {
 				// THE SMALLEST GAS LIMIT AT WHICH THIS REQUEST SUCCEEDS, found by
 				// re-executing it. The whole method is {@link estimateGas} above,
 				// including why it is a search rather than the run-and-measure it used to
-				// be, and where the request's EIP-2930 access list is charged.
-				requireHeadState(params[1], 'eth_estimateGas');
+				// be, and where the request's EIP-2930 access list is charged. The whole
+				// search runs inside ONE checkpoint holding K's state (and the overrides).
+				const k = historicalBlock(params[1], 'eth_estimateGas');
 				refuseBlockOverrides(params[3], 'eth_estimateGas');
+				const entries = [
+					...(k === undefined ? [] : historicalEntries(k)),
+					...parseStateOverrides(params[2], 'eth_estimateGas'),
+				];
+				const block = blockStore.get(k ?? latestNumber)!.block;
 				return numHex(
 					await pureRead(() =>
-						withStateOverrides(params[2], 'eth_estimateGas', () =>
-							estimateGas(params[0] ?? {}),
+						withStateEntries(entries, () =>
+							estimateGas(params[0] ?? {}, block),
 						),
 					),
 				);
+			}
 
 			case 'eth_fillTransaction': {
 				// Fill the missing fields of a tx request and return {tx, raw} like geth
@@ -2328,7 +2490,10 @@ export async function createNodeWithInternals(
 					p.gas != null
 						? BigInt(p.gas)
 						: await pureRead(() =>
-								estimateGas({...p, gas: undefined, accessList: undefined}),
+								estimateGas(
+									{...p, gas: undefined, accessList: undefined},
+									blockStore.get(latestNumber)!.block,
+								),
 							);
 				// Fee fields: legacy iff caller passed gasPrice (and no 1559 fields),
 				// otherwise EIP-1559 with the node's constant fee market.

@@ -279,9 +279,10 @@ export function mergeChangeSetOlderWins(
  * `checkpointSync()` uses (upstream's, kept byte for byte), which copies the
  * instance's own fields onto a fresh object of the same prototype. The fields are
  * bigints and `Uint8Array`s that are REPLACED rather than mutated, so a shallow
- * copy is independent.
+ * copy is independent. Exported for the node, which hands a sealed record's
+ * account to the engine for a historical call (`historicalEntries`).
  */
-function copyAccount(account: Account): Account {
+export function copyAccount(account: Account): Account {
 	return Object.assign(Object.create(Object.getPrototypeOf(account)), account);
 }
 

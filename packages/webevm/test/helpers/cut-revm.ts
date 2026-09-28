@@ -92,6 +92,10 @@
  *   - 'state-history': the SHARED state-history battery (helpers/state-history.ts):
  *                      point reads at a past block in the `stateHistory` window
  *                      answer as that block did, with revm writing the state
+ *   - 'historical-call': the SHARED historical-call battery
+ *                      (helpers/historical-call.ts): eth_call / eth_estimateGas
+ *                      at a past block in the window execute against that
+ *                      block's state and environment, with revm executing
  */
 import type {
 	CodeUnderTest,
@@ -113,6 +117,7 @@ import {runRevmConcurrency} from './revm-concurrency.js';
 import {runRevmRpcParams} from './revm-rpc-params.js';
 import {runRevmChangeSet} from './revm-change-set.js';
 import {runRevmStateHistory} from './revm-state-history.js';
+import {runRevmHistoricalCall} from './revm-historical-call.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {
 	runRevmPersistWrite,
@@ -320,6 +325,16 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'state-history') {
 			try {
 				results.revmStateHistory = await runRevmStateHistory();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The SHARED historical-call battery, with revm installed.
+		if (ctx.params.mode === 'historical-call') {
+			try {
+				results.revmHistoricalCall = await runRevmHistoricalCall();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
