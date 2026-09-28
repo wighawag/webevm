@@ -35,7 +35,7 @@
  */
 import {createVM, type VM} from '@ethereumjs/vm';
 import {MerkleStateManager} from '@ethereumjs/statemanager';
-import {OverlayStorageStateManager} from './state-manager.js';
+import {OverlayStorageStateManager, type ChangeSet} from './state-manager.js';
 import {Common, Mainnet, Hardfork} from '@ethereumjs/common';
 import {createBlock, type Block} from '@ethereumjs/block';
 import {createTxFromRLP, createTx, type TypedTransaction} from '@ethereumjs/tx';
@@ -284,7 +284,65 @@ interface SubmittedTx {
 	readonly sender: Address;
 }
 
+/**
+ * Switches the node's INTERNAL machinery on that no {@link NodeOptions} field
+ * exposes yet. NOT exported from `src/index.ts`: only this package's own tests
+ * and the next tasks reach it.
+ */
+export interface NodeInternals {
+	/**
+	 * Record the per-block CHANGE SET (the open record of prior values; see the
+	 * header of ./state-manager.ts). Off by default, and a node with it off
+	 * records nothing and pays nothing. The tasks `state-history-point-reads`
+	 * (`stateHistory`) and `trie-mode-derives-its-root-from-the-flat-state`
+	 * (`computeStateRoot`) turn it on from their options; until then only the
+	 * tests do, through {@link createNodeWithInternals}. `'none'` state mode only:
+	 * the change set lives in `OverlayStorageStateManager`.
+	 */
+	recordChangeSets?: boolean;
+}
+
+/**
+ * What {@link changeSetsForTests} returns: the change set of the HEAD block
+ * (taken when it was mined) and the OPEN record (every write since), as live
+ * read-only references. `recording: false` and both `undefined` on a node that
+ * does not record.
+ */
+export interface ChangeSetProbe {
+	recording: boolean;
+	/** What the last MINED block changed, with each key's value at the end of the block before it. */
+	headBlock: ChangeSet | undefined;
+	/** Every write since the head was mined (cheats, a loaded baseline is cleared). */
+	open: ChangeSet | undefined;
+}
+
+const changeSetProbes = new WeakMap<SlimNode, () => ChangeSetProbe>();
+
+/**
+ * TEST-ONLY ACCESSOR for a node's change sets, named as such: it hands out the
+ * node's own record objects (read-only by contract) so a test can hold them
+ * against the state it reads through the public surface. Not part of
+ * `SlimNode` (the worker proxy's shape test would otherwise demand it cross a
+ * comlink boundary) and not exported from `src/index.ts`.
+ */
+export function changeSetsForTests(node: SlimNode): ChangeSetProbe {
+	const probe = changeSetProbes.get(node);
+	if (probe === undefined)
+		throw new Error(
+			'webevm: changeSetsForTests() was handed an object createNode() did not return.',
+		);
+	return probe();
+}
+
 export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
+	return createNodeWithInternals(options, {});
+}
+
+/** {@link createNode} with {@link NodeInternals}; internal, see there. */
+export async function createNodeWithInternals(
+	options: NodeOptions,
+	internals: NodeInternals,
+): Promise<SlimNode> {
 	const chainId = options.chainId ?? 31337;
 	const stateMode = options.stateMode ?? 'none';
 	const senderMode: SenderMode = options.senderMode ?? 'recover';
@@ -311,6 +369,37 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		stateMode === 'trie'
 			? new MerkleStateManager()
 			: new OverlayStorageStateManager();
+
+	// THE CHANGE SET, switched on BEFORE the first write so that the construction
+	// baselines below really go through the recorder and really get cleared when
+	// genesis is stored (a baseline left in the record would reconstruct EMPTY
+	// state at genesis). `changeSets` is the manager when recording, else
+	// `undefined`, so every use below is one optional call.
+	let changeSets: OverlayStorageStateManager | undefined;
+	if (internals.recordChangeSets) {
+		if (!(sm instanceof OverlayStorageStateManager))
+			throw new Error(
+				"webevm: change sets are recorded in stateMode:'none' only; the trie " +
+					'state manager has no per-block record.',
+			);
+		sm.enableChangeSets();
+		changeSets = sm;
+	}
+	/**
+	 * The change set of the HEAD block, taken from the open record when the block
+	 * was mined. Only the head's is kept: holding a window of them is
+	 * `state-history-point-reads`' job, which will replace this one slot.
+	 */
+	let headBlockChangeSet: ChangeSet | undefined;
+	/**
+	 * Run a PURE READ (`eth_call`, `eth_estimateGas`, `eth_fillTransaction`'s
+	 * estimate, with or without state overrides) with change-set recording
+	 * suspended: every level it opens is reverted, so recording there is wasted
+	 * work. A cost rule; see `withChangeSetsSuspended` in ./state-manager.ts.
+	 */
+	function pureRead<T>(read: () => Promise<T>): Promise<T> {
+		return changeSets ? changeSets.withChangeSetsSuspended(read) : read();
+	}
 
 	/**
 	 * THE SERIALISATION POINT: the tail of a promise chain that every public entry
@@ -615,6 +704,9 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 		{common},
 	);
 	storeBlock(genesis, [], [], await currentStateRoot());
+	// BASELINES ARE NOT HISTORY: `initialBalances` / `initialState` ARE block 0,
+	// not a change to it.
+	changeSets?.takeChangeSet();
 
 	// Pending raw txs awaiting the next mined block (manual/interval modes). Each
 	// carries its SENDER, decided once at parse time by `parseTx`: the node derives
@@ -823,6 +915,11 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 
 		allLogs.push(...blockLogs);
 		storeBlock(block, txHashes, blockLogs, await currentStateRoot());
+		// THE BLOCK'S CHANGE SET is everything written since the previous head was
+		// mined: this block's transactions AND any `evm_set*` cheat issued between
+		// the two blocks, which belongs to this block (the first one that can see
+		// it). Taken with no checkpoint open, which `takeChangeSet` insists on.
+		if (changeSets) headBlockChangeSet = changeSets.takeChangeSet();
 		// emit newHeads
 		for (const cb of headSubs) cb({number: blockNumber, hash: blockHash});
 
@@ -1902,8 +1999,10 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			case 'eth_call': {
 				requireHeadState(params[1], 'eth_call');
 				refuseBlockOverrides(params[3], 'eth_call');
-				const r = await withStateOverrides(params[2], 'eth_call', () =>
-					evmCall(params[0] ?? {}),
+				const r = await pureRead(() =>
+					withStateOverrides(params[2], 'eth_call', () =>
+						evmCall(params[0] ?? {}),
+					),
 				);
 				if (r.error)
 					throw new RpcError(3, 'execution reverted', hex(r.returnValue));
@@ -1917,8 +2016,10 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 				requireHeadState(params[1], 'eth_estimateGas');
 				refuseBlockOverrides(params[3], 'eth_estimateGas');
 				return numHex(
-					await withStateOverrides(params[2], 'eth_estimateGas', () =>
-						estimateGas(params[0] ?? {}),
+					await pureRead(() =>
+						withStateOverrides(params[2], 'eth_estimateGas', () =>
+							estimateGas(params[0] ?? {}),
+						),
 					),
 				);
 
@@ -1955,7 +2056,9 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 				const gas: bigint =
 					p.gas != null
 						? BigInt(p.gas)
-						: await estimateGas({...p, gas: undefined, accessList: undefined});
+						: await pureRead(() =>
+								estimateGas({...p, gas: undefined, accessList: undefined}),
+							);
 				// Fee fields: legacy iff caller passed gasPrice (and no 1559 fields),
 				// otherwise EIP-1559 with the node's constant fee market.
 				const isLegacy =
@@ -2461,6 +2564,12 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			latestNumber = sh.number;
 			parentHash = block.hash();
 		}
+
+		// A LOADED STATE IS A BASELINE, NOT HISTORY: the record is cleared, like the
+		// construction baselines at genesis. The dump carries no change set for its
+		// head, so there is none to report for it either.
+		changeSets?.takeChangeSet();
+		headBlockChangeSet = undefined;
 	}
 
 	// ---------- persistence auto-load on creation ----------
@@ -2553,7 +2662,7 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 	// arriving over a served port queues exactly like one made directly.
 	const publicRequest = (args: RequestArguments) =>
 		serialise(() => persistingRequest(args));
-	return {
+	const node: SlimNode = {
 		request: publicRequest,
 		mine: () => serialise(mineAndPersist),
 		dumpState: () => serialise(dumpState),
@@ -2612,4 +2721,10 @@ export async function createNode(options: NodeOptions = {}): Promise<SlimNode> {
 			servedPorts.clear();
 		},
 	};
+	changeSetProbes.set(node, () => ({
+		recording: changeSets !== undefined,
+		headBlock: headBlockChangeSet,
+		open: changeSets?.peekChangeSet(),
+	}));
+	return node;
 }

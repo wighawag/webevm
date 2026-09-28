@@ -161,27 +161,6 @@ export function assertStateShape(sm: OverlayStorageStateManager): void {
 			);
 		}
 	}
-	// THE ACCOUNT AND CODE WRITERS, by key and synchronous. The store must write
-	// accounts and code THROUGH them rather than into the maps, because that is
-	// where the node records the per-block change set (the open record): a direct
-	// map write would change state without the record ever hearing of it, which
-	// no read and no gas figure can detect. See the header of src/state-manager.ts.
-	const writers = ['setAccountAt', 'setCodeAt', 'removeAccountAt'] as const;
-	const missingWriters = writers.filter(
-		(name) => typeof (sm as unknown as Record<string, unknown>)[name] !== 'function',
-	);
-	if (missingWriters.length > 0) {
-		throw new Error(
-			`webevm/revm: the state manager does not expose ${missingWriters
-				.map((name) => `${name}()`)
-				.join(', ')} (it must have setAccountAt(), setCodeAt() and ` +
-				"removeAccountAt()), so it is not the node's OverlayStorageStateManager. " +
-				'The revm engine writes accounts and code synchronously through those ' +
-				'methods, which is where the node records every write it has to be able to ' +
-				'undo; writing the maps directly would change state behind that record. ' +
-				'See src/state-manager.ts.',
-		);
-	}
 	if (
 		typeof sm.storageAt !== 'function' ||
 		typeof sm.liveStorage !== 'function' ||
@@ -194,6 +173,28 @@ export function assertStateShape(sm: OverlayStorageStateManager): void {
 				'OverlayStorageStateManager. The revm engine reads AND writes storage ' +
 				'synchronously through those accessors; a state manager with a different ' +
 				'storage representation would answer every slot as ZERO rather than failing. ' +
+				'See src/state-manager.ts.',
+		);
+	}
+	// THE ACCOUNT AND CODE WRITERS, by key and synchronous. The store must write
+	// accounts and code THROUGH them rather than into the maps, because that is
+	// where the node records the per-block change set (the open record): a direct
+	// map write would change state without the record ever hearing of it, which
+	// no read and no gas figure can detect. See the header of src/state-manager.ts.
+	const writers = ['setAccountAt', 'setCodeAt', 'removeAccountAt'] as const;
+	const missingWriters = writers.filter(
+		(name) =>
+			typeof (sm as unknown as Record<string, unknown>)[name] !== 'function',
+	);
+	if (missingWriters.length > 0) {
+		throw new Error(
+			`webevm/revm: the state manager does not expose ${missingWriters
+				.map((name) => `${name}()`)
+				.join(', ')} (it must have setAccountAt(), setCodeAt() and ` +
+				"removeAccountAt()), so it is not the node's OverlayStorageStateManager. " +
+				'The revm engine writes accounts and code synchronously through those ' +
+				'methods, which is where the node records every write it has to be able to ' +
+				'undo; writing the maps directly would change state behind that record. ' +
 				'See src/state-manager.ts.',
 		);
 	}

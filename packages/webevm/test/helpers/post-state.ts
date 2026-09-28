@@ -75,26 +75,28 @@ import {createNode, type SlimNode} from '../../src/index.js';
 import type {EngineFactory} from './conformance.js';
 import {privateKeyToAccount} from 'viem/accounts';
 
-const PK = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
-const CHAIN_ID = 31337;
+export const PK =
+	'0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
+export const CHAIN_ID = 31337;
 const GENESIS_BALANCE = 10n ** 24n;
 const account = privateKeyToAccount(PK);
 
 /** The node's own default base fee, restated so the transactions can be signed. */
-const BASE_FEE = 1_000_000_000n;
+export const BASE_FEE = 1_000_000_000n;
 /**
  * A distinctive block coinbase, so "the coinbase" is never confused with the zero
  * address (which is also the node's default `from` for a read).
  */
-const COINBASE = '0x00000000000000000000000000000000c0173a5e';
+export const COINBASE = '0x00000000000000000000000000000000c0173a5e';
 /** A pinned block timestamp, so the two chains cannot drift on `Date.now()`. */
-const TIMESTAMP = 1_700_000_000n;
+export const TIMESTAMP = 1_700_000_000n;
 
 // --- the bytecode fixtures ------------------------------------------------
 // Hand-written rather than compiled, because each one has to reach ONE write
 // callback and nothing else; a Solidity contract would drag its own dispatcher,
 // memory layout and metadata hash through every assertion. Every byte is spelled
-// out at its constant.
+// out at its constant. The ones ./change-set.ts replays are EXPORTED, so the
+// change-set differential runs the same shapes rather than a second copy of them.
 
 /**
  * Runtime: `PUSH1 00, SLOAD, PUSH1 00, MSTORE, PUSH1 20, PUSH1 00, RETURN` —
@@ -110,7 +112,7 @@ const RUNTIME_RETURNS_SLOT1 = '60015460005260206000f3';
  * `PUSH1 0b, PUSH1 11, PUSH1 00, CODECOPY, PUSH1 0b, PUSH1 00, RETURN` (copy the
  * 11 runtime bytes sitting at offset 0x11 and return them). 17 bytes of init.
  */
-const CREATE_INIT = `602a600055600b6011600039600b6000f3${RUNTIME_RETURNS_SLOT0}`;
+export const CREATE_INIT = `602a600055600b6011600039600b6000f3${RUNTIME_RETURNS_SLOT0}`;
 
 /**
  * The CHILD of shape 2, as init code: `PUSH6 <6 runtime bytes>, PUSH1 00, MSTORE,
@@ -132,23 +134,23 @@ const CHILD_INIT = '656001600055006000526006601af3';
  * byte comparison of `dumpState` fail on a correct implementation, and what makes
  * "the entry flagged created" ambiguous for the receipt's `contractAddress`.
  */
-const NESTED_CREATE_INIT =
+export const NESTED_CREATE_INIT =
 	`6e${CHILD_INIT}600052600f60116000f0600155600b6029600039600b6000f3` +
 	RUNTIME_RETURNS_SLOT1;
 
 /** SHAPE 3 — the INNER callee: `PUSH1 63, PUSH1 07, SSTORE, STOP` (slot 7 = 0x63). */
-const INNER_ADDR = '0x0000000000000000000000000000000000001111';
-const INNER_CODE = '0x60636007550000';
+export const INNER_ADDR = '0x0000000000000000000000000000000000001111';
+export const INNER_CODE = '0x60636007550000';
 /**
  * SHAPE 3 — the OUTER caller: `PUSH1 01, PUSH1 00, SSTORE` (its own slot 0), then
  * `PUSH1 00` five times (retLength, retOffset, argsLength, argsOffset, value),
  * `PUSH20 <inner>`, `GAS`, `CALL`, `STOP`. Two frames, one slot each.
  */
-const OUTER_ADDR = '0x0000000000000000000000000000000000002222';
-const OUTER_CODE = `0x60016000556000600060006000600073${INNER_ADDR.slice(2)}5af100`;
+export const OUTER_ADDR = '0x0000000000000000000000000000000000002222';
+export const OUTER_CODE = `0x60016000556000600060006000600073${INNER_ADDR.slice(2)}5af100`;
 
 /** SHAPE 4 — an account that EXISTS and is empty: balance 0, nonce 0, no code. */
-const EMPTY_ACCOUNT = '0x0000000000000000000000000000000000003333';
+export const EMPTY_ACCOUNT = '0x0000000000000000000000000000000000003333';
 
 /**
  * SHAPE 5a — init code that writes storage and then DESTROYS ITSELF in the same
@@ -157,8 +159,8 @@ const EMPTY_ACCOUNT = '0x0000000000000000000000000000000000003333';
  * transaction is really removed, which is why this one dies in its constructor.
  * It deploys no code, so what is left to observe is the account and its storage.
  */
-const SD_BENEFICIARY = '0x0000000000000000000000000000000000004444';
-const SELFDESTRUCT_INIT = `602a60005573${SD_BENEFICIARY.slice(2)}ff`;
+export const SD_BENEFICIARY = '0x0000000000000000000000000000000000004444';
+export const SELFDESTRUCT_INIT = `602a60005573${SD_BENEFICIARY.slice(2)}ff`;
 
 /**
  * SHAPE 5b — the OTHER half of EIP-6780: a contract created in an EARLIER
@@ -169,7 +171,7 @@ const SELFDESTRUCT_INIT = `602a60005573${SD_BENEFICIARY.slice(2)}ff`;
  */
 const SD2_BENEFICIARY = '0x0000000000000000000000000000000000005555';
 const SURVIVOR_RUNTIME = `73${SD2_BENEFICIARY.slice(2)}ff`;
-const SURVIVOR_INIT = `606360095575${SURVIVOR_RUNTIME}6000526016600af3`;
+export const SURVIVOR_INIT = `606360095575${SURVIVOR_RUNTIME}6000526016600af3`;
 
 /** Genesis-funded, and the only sender in this battery. */
 const SENDER = account.address;

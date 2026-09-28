@@ -287,9 +287,9 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * nothing yet. NO INITIALISER, for the header's field-initialiser trap: the
 	 * base constructor's `checkpointSync()` runs before any field would.
 	 */
-	private declare changeLevels: (ChangeSet | undefined)[] | undefined;
+	declare private changeLevels: (ChangeSet | undefined)[] | undefined;
 	/** > 0 while a pure read runs: see {@link withChangeSetsSuspended}. */
-	private declare changeSetsSuspended: number | undefined;
+	declare private changeSetsSuspended: number | undefined;
 
 	constructor(opts?: ConstructorParameters<typeof SimpleStateManager>[0]) {
 		super(opts);
@@ -366,6 +366,8 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * {@link clearStorageAt}, with no checkpoint open), rather than swept later.
 	 */
 	override async commit(): Promise<void> {
+		// Refused BEFORE anything moves, so a refusal leaves the stacks as they were.
+		this.refuseCommitIntoBottomWhileSuspended();
 		this.accountStack.splice(-2, 1);
 		this.codeStack.splice(-2, 1);
 		const overlays = this.storageOverlays;
@@ -380,7 +382,7 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 		// After the `pop()` below, `below` is the bottom overlay exactly when the
 		// stack is two deep now.
 		const belowIsBottom = overlays.length === 2;
-		this.mergeChangeLevelDown(belowIsBottom);
+		this.mergeChangeLevelDown();
 		for (const address of top.cleared) {
 			below.written.delete(address);
 			if (!belowIsBottom) below.cleared.add(address);
@@ -570,19 +572,32 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	}
 
 	/**
-	 * `commit()`'s half for the change set: merge the top level's record into the
-	 * one below, the BELOW entry winning (it holds the older value: the key was
-	 * written there before the checkpoint).
+	 * A commit INTO the bottom level while recording is suspended would turn a
+	 * pure read's unrecorded writes into committed state behind the record, so it
+	 * is refused. No pure read does it (each reverts the level it opened); this is
+	 * the guard that makes the suspension a cost rule and never a correctness one.
 	 */
-	private mergeChangeLevelDown(belowIsBottom: boolean): void {
-		const levels = this.changeLevels;
-		if (levels === undefined) return;
-		if (belowIsBottom && (this.changeSetsSuspended ?? 0) > 0)
+	private refuseCommitIntoBottomWhileSuspended(): void {
+		if (
+			this.changeLevels !== undefined &&
+			(this.changeSetsSuspended ?? 0) > 0 &&
+			this.accountStack.length === 2
+		)
 			throw new Error(
 				'webevm: a checkpoint was committed into committed state while change ' +
 					'sets were suspended for a pure read. A pure read must revert its ' +
 					'levels; its writes were not recorded.',
 			);
+	}
+
+	/**
+	 * `commit()`'s half for the change set: merge the top level's record into the
+	 * one below, the BELOW entry winning (it holds the older value: the key was
+	 * written there before the checkpoint).
+	 */
+	private mergeChangeLevelDown(): void {
+		const levels = this.changeLevels;
+		if (levels === undefined) return;
 		const top = levels.pop();
 		if (top === undefined) return;
 		const belowIndex = levels.length - 1;

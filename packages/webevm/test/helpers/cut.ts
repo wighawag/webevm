@@ -88,6 +88,10 @@ import {
 	runPendingNonceChecks,
 } from './rpc-params.js';
 import {runConcurrencyChecks} from './concurrency.js';
+import {
+	runChangeSetChecks,
+	runChangeSetStateManagerChecks,
+} from './change-set.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -192,6 +196,20 @@ const cut: CodeUnderTest = {
 					overridesTrie: await runStateOverrideChecks({stateMode: 'trie'}),
 					logsAndFeeHistory: await runLogsAndFeeHistoryChecks(),
 					pendingNonce: await runPendingNonceChecks(),
+				};
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// change-set: every key a block changes is in the record the node takes for
+		// it, with the value from the end of the previous block.
+		if (ctx.params.mode === 'change-set') {
+			try {
+				results.changeSet = {
+					battery: await runChangeSetChecks(),
+					stateManager: await runChangeSetStateManagerChecks(),
 				};
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
