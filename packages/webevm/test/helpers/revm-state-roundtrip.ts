@@ -10,9 +10,9 @@
  * between two transactions is picked up on the next access and a dump taken after
  * one is complete. Both would fail silently if either were untrue.
  *
- * WHICH STATE MODE: the default `'none'`. (This engine used to refuse
- * `stateMode:'trie'`, ADR 0005; it serves it since ADR 0014, and a trie-mode
- * dump and reload on revm is covered by `revm-trie-derived.spec.ts`.)
+ * WHICH CONFIGURATION: the default, without `computeStateRoot`. (This engine
+ * used to refuse a root-computing node, then trie mode, ADR 0005; it serves it
+ * since ADR 0014, and a `computeStateRoot` dump and reload on revm is covered by `revm-trie-derived.spec.ts`.)
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them: the suite builds an original
  * node and the node it reloads the dump into, and an engine instance binds to

@@ -39,9 +39,10 @@
  * checkpoint stacks plus the node's own storage overlays (see
  * ./revm-state-store.ts, ADR 0005 for the reach-through and ADR 0010 for the
  * ownership decision), which is the only synchronous view of the node's state
- * that exists. EVERY node runs on that state, `stateMode:'trie'` included: the
- * trie there is DERIVED from the flat state between blocks and no engine ever
- * reads it (ADR 0014, which lifted this engine's former refusal of `'trie'`).
+ * that exists. EVERY node runs on that state, `computeStateRoot: true` included:
+ * the trie there is DERIVED from the flat state between blocks and no engine
+ * ever reads it (ADR 0014, which lifted this engine's former refusal of trie
+ * mode, as a root-computing node was then called).
  * THE NODE KEEPS OWNING STATE: nothing is copied into wasm, and a transaction
  * writes back only the accounts it touched and the slots that changed.
  *
@@ -269,7 +270,7 @@ export async function createRevmEngine(
 			chainId = context.common.chainId();
 			nodeCommon = context.common;
 			// The one cast: `StateManagerInterface` does not declare the stacks, but
-			// `'none'` mode IS the node's `OverlayStorageStateManager`. Cast to the REAL
+			// every node's state manager IS its `OverlayStorageStateManager`. Cast to the REAL
 			// type (never to `any`) so every field access below is still typechecked and
 			// a rename in `@ethereumjs/statemanager` — or in our own state manager — is a
 			// compile error here. `bind` also asserts the shape at runtime, which is the

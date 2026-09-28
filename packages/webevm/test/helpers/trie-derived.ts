@@ -1,5 +1,5 @@
 /**
- * trie-derived.ts: `stateMode:'trie'` runs on the SAME flat state as every node
+ * trie-derived.ts: a `computeStateRoot: true` node runs on the SAME flat state as every node
  * and DERIVES its trie from it (src/derived-trie.ts, ADR 0014). What that must
  * give a consumer, through the public surface:
  *
@@ -63,7 +63,7 @@ async function nonceOf(node: SlimNode): Promise<number> {
  */
 async function runDumpReload(makeEngine: EngineFactory | undefined) {
 	const original = await createNode(
-		await chainNodeOptions(makeEngine, {stateMode: 'trie'}),
+		await chainNodeOptions(makeEngine, {computeStateRoot: true}),
 	);
 	// The header root of every block, and `getStateRoot()` right after it: the
 	// two must agree at a head with nothing pending.
@@ -91,7 +91,7 @@ async function runDumpReload(makeEngine: EngineFactory | undefined) {
 
 	const dump = await original.dumpState();
 	const reloaded = await createNode(
-		await chainNodeOptions(makeEngine, {stateMode: 'trie'}),
+		await chainNodeOptions(makeEngine, {computeStateRoot: true}),
 	);
 	await reloaded.loadState(dump);
 
@@ -177,7 +177,7 @@ async function runNoTrieInNoneMode(makeEngine: EngineFactory | undefined) {
 	// above is a measurement rather than a probe that cannot count.
 	const beforeTrie = derivedTriesCreatedForTests();
 	const trie = await createNode(
-		await chainNodeOptions(makeEngine, {stateMode: 'trie'}),
+		await chainNodeOptions(makeEngine, {computeStateRoot: true}),
 	);
 	const createdByTrie = derivedTriesCreatedForTests() - beforeTrie;
 	await trie.dispose();
@@ -192,7 +192,7 @@ export async function runTrieDerivedChecks(
 		noTrieInNoneMode: await runNoTrieInNoneMode(params.makeEngine),
 		history: await runStateHistoryChecks({
 			makeEngine: params.makeEngine,
-			stateMode: 'trie',
+			computeStateRoot: true,
 		}),
 	};
 }

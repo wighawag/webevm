@@ -11,10 +11,11 @@
  * transactions had quietly gone back to `@ethereumjs/vm` would diff the reference
  * against itself and pass every assertion in it.
  *
- * WHICH MODES: both. revm used to REFUSE `stateMode:'trie'` (it ran on
- * `MerkleStateManager`, which has no synchronous view, ADR 0005); every node now
- * runs on the flat state and trie mode derives its trie from it between blocks
- * (ADR 0014), so the whole battery runs on revm in `'none'` AND in `'trie'`.
+ * WHICH CONFIGURATIONS: both. revm used to REFUSE a root-computing node (then
+ * `'trie'` mode, which ran on `MerkleStateManager`, which has no synchronous
+ * view, ADR 0005); every node now runs on the flat state and a root-computing
+ * node derives its trie from it between blocks (ADR 0014), so the whole battery
+ * runs on revm without AND with `computeStateRoot`.
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them. The battery builds two
  * nodes per mode, and an engine instance binds to

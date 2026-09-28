@@ -1,6 +1,6 @@
 /**
- * trie-derived.spec.ts: `stateMode:'trie'` runs on the same flat state as every
- * node and DERIVES its trie from it (src/derived-trie.ts, ADR 0014), on the
+ * trie-derived.spec.ts: a `computeStateRoot: true` node runs on the same flat
+ * state as every node and DERIVES its trie from it (src/derived-trie.ts, ADR 0014), on the
  * DEFAULT engine. The batteries are helpers/trie-derived.ts and
  * helpers/storage-collision.ts; the revm half is revm-trie-derived.spec.ts, held
  * to the same assertions (trie-derived-expected.ts,

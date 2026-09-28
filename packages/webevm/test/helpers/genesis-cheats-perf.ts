@@ -8,10 +8,11 @@
  *
  *  2. RUNTIME CHEATS: the anvil/hardhat-style `evm_set*` methods mutate live
  *     state without a tx — assert balance/nonce/code/storage round-trip via the
- *     standard eth_get* reads, in BOTH state modes.
+ *     standard eth_get* reads, without AND with `computeStateRoot` (result labels
+ *     `'none'` and `'trie'`).
  *
- *  3. TRIE vs NONE PERF: run the SAME deploy + N increments in `stateMode:'none'`
- *     and `stateMode:'trie'` and report the per-call / deploy timing delta (trie
+ *  3. TRIE vs NONE PERF: run the SAME deploy + N increments without and with
+ *     `computeStateRoot` and report the per-call / deploy timing delta (trie
  *     pays for a real Merkle-Patricia root each block; none does not).
  *
  * ENGINE-PARAMETERISED for (1) and (2), like the conformance battery: state stays
@@ -20,9 +21,10 @@
  * {@link runGenesisCheatsOnEngine} runs those two halves on an injected engine
  * rather than duplicating them for it.
  *
- * (3) IS NOT ENGINE-PARAMETERISED: it is a comparison BETWEEN THE TWO STATE
- * MODES on the default engine (`webevm/revm` used to refuse `stateMode:'trie'`,
- * ADR 0005, and serves it since ADR 0014). Engine performance is measured in
+ * (3) IS NOT ENGINE-PARAMETERISED: it is a comparison between a node without
+ * and one with `computeStateRoot`, on the default engine (`webevm/revm` used to
+ * refuse a root-computing node, then trie mode, ADR 0005, and serves it since
+ * ADR 0014). Engine performance is measured in
  * `packages/benchmarks`, which is where this repo keeps numbers it looks at.
  */
 import {
@@ -32,7 +34,13 @@ import {
 	encodeFunctionData,
 } from 'viem';
 import {privateKeyToAccount} from 'viem/accounts';
-import {createNode, type SlimNode, type StateMode} from '../../src/index.js';
+import {createNode, type SlimNode} from '../../src/index.js';
+
+/**
+ * Result labels: `'none'` is a node without `computeStateRoot`, `'trie'` one
+ * with it. Test-local; the node's option is the boolean.
+ */
+type RootLabel = 'none' | 'trie';
 import type {EngineFactory} from './conformance.js';
 import {counterAbi, counterBytecode} from './counter.js';
 
@@ -100,7 +108,7 @@ export interface GenesisCheatsPerfReport {
 	// (1) custom genesis
 	customGenesis: CustomGenesisReadings;
 	// (2) runtime cheats (per mode)
-	cheats: Record<StateMode, CheatReadings>;
+	cheats: Record<RootLabel, CheatReadings>;
 	// (3) perf
 	perf: {
 		none: {deployMs: number; avgCallMs: number; getRootThrows: boolean};
@@ -197,17 +205,18 @@ async function customGenesisChecks(
 }
 
 /**
- * (2) THE RUNTIME CHEATS, in ONE state mode, on whichever engine is installed. The
+ * (2) THE RUNTIME CHEATS, on ONE configuration (with or without
+ * `computeStateRoot`), on whichever engine is installed. The
  * `evm_set*` methods mutate the node's live state with no transaction, and the
  * readings come back through the standard `eth_get*` calls.
  */
 async function cheatChecks(
-	mode: StateMode,
+	computeStateRoot: boolean,
 	makeEngine?: EngineFactory,
 ): Promise<CheatReadings> {
 	const n = await createNode({
 		chainId: CHAIN_ID,
-		stateMode: mode,
+		computeStateRoot,
 		miningConfig: {type: 'auto'},
 		engine: await makeEngine?.(),
 	});
@@ -257,15 +266,15 @@ export async function runGenesisCheatsPerf(): Promise<GenesisCheatsPerfReport> {
 
 	// ---------- (2) RUNTIME CHEATS (both modes) ----------
 	const cheats = {} as GenesisCheatsPerfReport['cheats'];
-	for (const mode of ['none', 'trie'] as StateMode[]) {
-		cheats[mode] = await cheatChecks(mode);
+	for (const mode of ['none', 'trie'] as RootLabel[]) {
+		cheats[mode] = await cheatChecks(mode === 'trie');
 	}
 
 	// ---------- (3) TRIE vs NONE PERF ----------
-	async function measure(mode: StateMode) {
+	async function measure(mode: RootLabel) {
 		const n = await createNode({
 			chainId: CHAIN_ID,
-			stateMode: mode,
+			computeStateRoot: mode === 'trie',
 			miningConfig: {type: 'auto'},
 			initialBalances: {[account.address]: 10n ** 24n},
 		});
@@ -340,18 +349,20 @@ export async function runGenesisCheatsPerf(): Promise<GenesisCheatsPerfReport> {
 }
 
 export interface GenesisCheatsOnEngineReport {
-	/** The state mode both halves ran in. */
-	servedMode: StateMode;
+	/** Whether both halves ran on a `computeStateRoot` node. */
+	computeStateRoot: boolean;
 	customGenesis: CustomGenesisReadings;
 	cheats: CheatReadings;
 }
 
 /**
- * (1) and (2) with an injected engine, in the state mode `serves` names.
+ * (1) and (2) with an injected engine, with or without `computeStateRoot` as
+ * asked.
  *
- * The unparameterised {@link runGenesisCheatsPerf} keeps covering BOTH modes on
- * the default engine. (It was written when `webevm/revm` refused `'trie'`; it
- * serves both since ADR 0014, and trie mode on revm is covered by
+ * The unparameterised {@link runGenesisCheatsPerf} keeps covering BOTH on the
+ * default engine. (It was written when `webevm/revm` refused trie mode, as a
+ * root-computing node was then called; it serves both since ADR 0014, and a
+ * root-computing node on revm is covered by
  * `revm-trie-derived.spec.ts`.)
  *
  * (3), the trie-vs-none perf comparison, is not repeated per engine: engine
@@ -359,12 +370,12 @@ export interface GenesisCheatsOnEngineReport {
  */
 export async function runGenesisCheatsOnEngine(opts: {
 	makeEngine: EngineFactory;
-	serves: StateMode;
+	computeStateRoot: boolean;
 }): Promise<GenesisCheatsOnEngineReport> {
 	return {
-		servedMode: opts.serves,
+		computeStateRoot: opts.computeStateRoot,
 		customGenesis: await customGenesisChecks(opts.makeEngine),
-		cheats: await cheatChecks(opts.serves, opts.makeEngine),
+		cheats: await cheatChecks(opts.computeStateRoot, opts.makeEngine),
 	};
 }
 

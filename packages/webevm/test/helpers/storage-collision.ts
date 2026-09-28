@@ -29,7 +29,13 @@ import {
 	getContractAddress,
 } from 'viem';
 import {privateKeyToAccount} from 'viem/accounts';
-import {createNode, type StateMode} from '../../src/index.js';
+import {createNode} from '../../src/index.js';
+
+/**
+ * Result labels: `'none'` is a node without `computeStateRoot`, `'trie'` one
+ * with it. Test-local; the node's option is the boolean.
+ */
+type RootLabel = 'none' | 'trie';
 import type {EngineFactory} from './conformance.js';
 import {PK, CHAIN_ID} from './post-state.js';
 
@@ -76,18 +82,18 @@ export interface CollisionOutcome {
 	targetSlot7: string;
 	/** Inner cases: what CREATE2 returned (`target` or `0`). */
 	create2Returned: string | null;
-	/** `getStateRoot()` after the creation, trie mode only. */
+	/** `getStateRoot()` after the creation, `computeStateRoot` only. */
 	root: string | null;
 }
 
 async function runCase(
-	stateMode: StateMode,
+	mode: RootLabel,
 	name: CollisionCase,
 	makeEngine: EngineFactory | undefined,
 ): Promise<CollisionOutcome> {
 	const node = await createNode({
 		chainId: CHAIN_ID,
-		stateMode,
+		computeStateRoot: mode === 'trie',
 		miningConfig: {type: 'auto'},
 		initialBalances: {[account.address]: 10n ** 24n},
 		engine: makeEngine ? await makeEngine() : undefined,
@@ -146,17 +152,17 @@ async function runCase(
 			await rq('eth_getStorageAt', [target, SLOT, 'latest']),
 		).toString(),
 		create2Returned: slot0 === null ? null : slot0 === 0n ? '0' : 'target',
-		root: stateMode === 'trie' ? await node.getStateRoot() : null,
+		root: mode === 'trie' ? await node.getStateRoot() : null,
 	};
 	await node.dispose();
 	return out;
 }
 
-/** Every case in both state modes, on the engine `makeEngine` builds. */
+/** Every case without and with `computeStateRoot`, on the engine `makeEngine` builds. */
 export async function runStorageCollisionChecks(
 	params: {makeEngine?: EngineFactory} = {},
-): Promise<Record<StateMode, Record<CollisionCase, CollisionOutcome>>> {
-	const out = {} as Record<StateMode, Record<CollisionCase, CollisionOutcome>>;
+): Promise<Record<RootLabel, Record<CollisionCase, CollisionOutcome>>> {
+	const out = {} as Record<RootLabel, Record<CollisionCase, CollisionOutcome>>;
 	for (const mode of ['none', 'trie'] as const) {
 		out[mode] = {} as Record<CollisionCase, CollisionOutcome>;
 		for (const c of COLLISION_CASES)

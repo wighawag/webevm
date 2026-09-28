@@ -11,9 +11,9 @@
  * The suite's claimed-sender section is the assertion that can tell the difference,
  * because it signs with one account and claims another.
  *
- * WHICH STATE MODE: the default `'none'`. (This engine used to refuse
- * `stateMode:'trie'`, ADR 0005; it serves it since ADR 0014, and trie mode on
- * revm is covered by `revm-trie-derived.spec.ts` and `revm-conformance.spec.ts`.)
+ * WHICH CONFIGURATION: the default, without `computeStateRoot`. (This engine
+ * used to refuse a root-computing node, then trie mode, ADR 0005; it serves it
+ * since ADR 0014, and `computeStateRoot` on revm is covered by `revm-trie-derived.spec.ts` and `revm-conformance.spec.ts`.)
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them: the suite builds two nodes
  * (a `'recover'` one and a `'trusted'` one) and an engine instance binds to exactly

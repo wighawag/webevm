@@ -16,8 +16,9 @@
  * held to having actually executed those transactions on revm, rather than
  * reporting that it did.
  *
- * BOTH STATE MODES, on revm. `'trie'` used to be REFUSED by revm at
- * construction (trie mode ran on `MerkleStateManager`, which has no synchronous
+ * WITHOUT AND WITH `computeStateRoot`, on revm (result labels `'none'` and
+ * `'trie'`). A root-computing node used to be REFUSED by revm at construction
+ * (trie mode, as it was then called, ran on `MerkleStateManager`, which has no synchronous
  * view, ADR 0005) and kept only its default-engine coverage. Every node now runs
  * on the flat state and trie mode derives its trie from it between blocks (ADR
  * 0014), so the WHOLE battery runs on revm in both modes, held to the same
@@ -36,7 +37,7 @@ import {mountHarness} from 'playwright-browser-harness';
 const here = dirname(fileURLToPath(import.meta.url));
 const cut = resolve(here, './helpers/cut-revm.ts');
 
-test('differential conformance with the revm engine installed (stateMode none and trie)', async ({
+test('differential conformance with the revm engine installed (without and with computeStateRoot)', async ({
 	page,
 }) => {
 	const h = await mountHarness(page, {
@@ -60,7 +61,7 @@ test('differential conformance with the revm engine installed (stateMode none an
 	for (const mode of ['none', 'trie'] as const) {
 		const served = c.byMode[mode];
 		console.log(
-			`\n[revm-conformance:${served.stateMode} on ${served.engineId}] ${served.steps.length} steps, ${served.totalMismatches} mismatches`,
+			`\n[revm-conformance:${mode} on ${served.engineId}] ${served.steps.length} steps, ${served.totalMismatches} mismatches`,
 		);
 		for (const s of served.steps) {
 			const tag = s.mismatches.length === 0 ? 'OK ' : 'XX ';
@@ -75,7 +76,7 @@ test('differential conformance with the revm engine installed (stateMode none an
 
 		// The battery really ran ON REVM (not silently on the default engine).
 		expect(served.engineId).toBe('revm-wasm');
-		expect(served.stateMode).toBe(mode);
+		expect(served.computeStateRoot).toBe(mode === 'trie');
 
 		// ...AND ITS TRANSACTIONS REALLY EXECUTED THERE, COUNTED AT THE SEAM rather
 		// than inferred from the line above.

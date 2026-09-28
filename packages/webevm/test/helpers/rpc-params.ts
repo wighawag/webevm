@@ -20,7 +20,7 @@
  * {@link runLogsAndFeeHistoryChecks} runs once, on the default engine.
  */
 import {createNode, type SlimNode} from '../../src/index.js';
-import type {Engine, StateMode} from '../../src/types.js';
+import type {Engine} from '../../src/types.js';
 import {
 	createWalletClient,
 	createPublicClient,
@@ -99,13 +99,13 @@ async function deployCounter(node: SlimNode) {
 const word = (n: number) => '0x' + n.toString(16).padStart(64, '0');
 
 export async function runStateOverrideChecks(
-	opts: {makeEngine?: () => Promise<Engine>; stateMode?: StateMode} = {},
+	opts: {makeEngine?: () => Promise<Engine>; computeStateRoot?: boolean} = {},
 ) {
 	const node = await createNode({
 		chainId: CHAIN_ID,
 		miningConfig: {type: 'auto'},
 		initialBalances: {[account.address]: 10n ** 24n},
-		...(opts.stateMode ? {stateMode: opts.stateMode} : {}),
+		...(opts.computeStateRoot ? {computeStateRoot: true} : {}),
 		...(opts.makeEngine ? {engine: await opts.makeEngine()} : {}),
 	});
 	const {wallet, counter} = await deployCounter(node);

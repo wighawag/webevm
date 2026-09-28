@@ -47,7 +47,10 @@ test('engine seam (default @ethereumjs/evm, injected engine, reads and transacti
 	// an injected engine is what the read path actually runs on
 	expect(c.stubEngineId).toBe('test-stub');
 	expect(c.stubConnectCount).toBe(1);
-	expect(c.stubConnectedStateMode).toBe('none');
+	// The context carries exactly these: whether the node computes a state root
+	// is NOT on it (it went with the old mode field, 2026-09-28), because no
+	// engine needs it now that every node runs on the same flat state.
+	expect(c.stubConnectedContextKeys).toBe('common,getBlockHash,stateManager');
 	expect(c.stubConnectedStateManagerUsable).toBe(true);
 	expect(c.stubCallResult).toBe(c.stubCallExpected);
 	// engine EXECUTION gas + node intrinsic gas

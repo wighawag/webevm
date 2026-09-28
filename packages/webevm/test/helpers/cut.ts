@@ -5,8 +5,9 @@
  *
  * Modes (one per library test):
  *   - 'slim-node-checks'   : legacy/1559 receipts, honest -32601 gaps, dump/load,
- *                            state-root mode (none throws / trie real root)
- *   - 'storage-overlay'    : `stateMode:'none'` storage is per-account with a
+ *                            state root (none without computeStateRoot /
+ *                            real root with it)
+ *   - 'storage-overlay'    : the node's storage is per-account with a
  *                            per-checkpoint OVERLAY — checkpoint/commit/revert
  *                            semantics against a naive control, a randomised
  *                            differential against the flat layout the node used
@@ -158,7 +159,7 @@ const cut: CodeUnderTest = {
 			return {results, timings, errors, env: captureEnv()};
 		}
 
-		// storage-overlay: the `stateMode:'none'` storage representation. Correctness
+		// storage-overlay: the node's storage representation. Correctness
 		// FIRST (semantics + a randomised differential against the layout the node
 		// shipped before, with the plausible wrong version kept as a control that must
 		// fail them), then the readers, then the serialised dumpState format.
@@ -226,7 +227,7 @@ const cut: CodeUnderTest = {
 			try {
 				results.rpcParams = {
 					overridesNone: await runStateOverrideChecks(),
-					overridesTrie: await runStateOverrideChecks({stateMode: 'trie'}),
+					overridesTrie: await runStateOverrideChecks({computeStateRoot: true}),
 					logsAndFeeHistory: await runLogsAndFeeHistoryChecks(),
 					pendingNonce: await runPendingNonceChecks(),
 				};
@@ -359,7 +360,7 @@ const cut: CodeUnderTest = {
 		}
 
 		// statetest (track B): real ethereum/tests GeneralStateTests against
-		// stateMode:'trie' — assert the post-state root + logs hash match.
+		// computeStateRoot: true: assert the post-state root + logs hash match.
 		if (ctx.params.mode === 'statetest') {
 			try {
 				const fixtures = ctx.params.fixtures as {name: string; json: any}[];
@@ -431,7 +432,7 @@ const cut: CodeUnderTest = {
 				// through comlink so an omission fails here instead of silently
 				// reading `undefined` in a consumer.
 				results.senderMode = out.senderMode;
-				results.stateMode = out.stateMode;
+				results.computeStateRoot = out.computeStateRoot;
 				// ...and the same question with NO field named: every key a main-thread
 				// node has, compared across the boundary, so a field added to `SlimNode`
 				// later is covered without anybody remembering to add it here.

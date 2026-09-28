@@ -158,7 +158,7 @@ export async function workerRoundtrip(workerUrl: string, sumTo: number) {
 	// proxy is supposed to forward. An omission here reads as `undefined`.
 	const engineId = node.engine?.id;
 	const senderMode = node.senderMode;
-	const stateMode = node.stateMode;
+	const computeStateRoot = node.computeStateRoot;
 
 	// THE SAME QUESTION, ASKED WITHOUT NAMING ANY FIELD. The three readings above
 	// are today's fields; this is the one that covers tomorrow's. A main-thread
@@ -190,7 +190,7 @@ export async function workerRoundtrip(workerUrl: string, sumTo: number) {
 		number,
 		engineId,
 		senderMode,
-		stateMode,
+		computeStateRoot,
 		shapeGaps,
 		roundtripAvgMs,
 		mainThreadMaxGapMs: maxGap,

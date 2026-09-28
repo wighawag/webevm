@@ -100,11 +100,12 @@
  *                      (helpers/state-history-persistence.ts): the undo log
  *                      survives dumpState / loadState, with revm executing
  *   - 'trie-derived': the SHARED derived-trie battery (helpers/trie-derived.ts),
- *                      with revm executing in stateMode:'trie'
+ *                      with revm executing with computeStateRoot: true
  *   - 'storage-collision': the SHARED creation-collision cases
- *                      (helpers/storage-collision.ts), in both state modes
+ *                      (helpers/storage-collision.ts), without and with
+ *                      computeStateRoot
  *   - 'statetest'   : the GeneralStateTests post-state roots (helpers/statetest.ts)
- *                      in stateMode:'trie' with revm executing every case
+ *                      with computeStateRoot: true, revm executing every case
  */
 import type {
 	CodeUnderTest,

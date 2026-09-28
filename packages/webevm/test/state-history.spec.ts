@@ -35,7 +35,7 @@ test('point reads at any block in the stateHistory window answer as that block d
 	assertStateHistory(c.battery, '@ethereumjs/evm');
 
 	// Construction: absent is off, {blocks: N} is on, anything else throws.
-	// Combining it with stateMode:'trie' is ACCEPTED: trie mode runs on the same
+	// Combining it with computeStateRoot: true is ACCEPTED: that node runs on the same
 	// flat state the undo log records (`trie-derived-from-the-flat-state`).
 	const k = c.construction;
 	expect(k.absent).toBe('accepted');

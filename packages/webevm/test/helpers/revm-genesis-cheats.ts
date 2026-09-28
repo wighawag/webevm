@@ -30,6 +30,6 @@ export async function runRevmGenesisCheats() {
 	const wasm = await WebAssembly.compile(bundlerResolvedWasm);
 	return runGenesisCheatsOnEngine({
 		makeEngine: () => createRevmEngine({wasm}),
-		serves: 'none',
+		computeStateRoot: false,
 	});
 }

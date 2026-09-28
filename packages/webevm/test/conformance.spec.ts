@@ -6,7 +6,7 @@
  *
  * WHY differential (not ethereum/tests fixtures): GeneralStateTests /
  * execution-spec-tests verify by comparing the post-state Merkle-Patricia TRIE
- * ROOT (+ keccak(RLP(logs))). The default slim node (`stateMode:'none'`) has NO
+ * ROOT (+ keccak(RLP(logs))). The default slim node (no `computeStateRoot`) has NO
  * trie/root on purpose and throws on getStateRoot, so those fixtures can't
  * validate it without reintroducing a trie — and VMTests (the one trie-free
  * format) is frozen at Homestead. The legacy effectiveGasPrice bug this node
@@ -14,8 +14,8 @@
  * package README "On comprehensive EVM test fixtures". The right tool is a
  * differential diff of OUR layer — implemented in test/helpers/conformance.ts.
  *
- * We run the whole battery against BOTH state modes ('none' default fast path AND
- * 'trie') and assert ZERO field-by-field mismatches against the reference.
+ * We run the whole battery WITHOUT and WITH `computeStateRoot` (result labels
+ * 'none', the default fast path, and 'trie') and assert ZERO field-by-field mismatches against the reference.
  */
 import {test, expect} from '@playwright/test';
 import {fileURLToPath} from 'node:url';

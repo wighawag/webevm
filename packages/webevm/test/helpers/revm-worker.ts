@@ -46,10 +46,10 @@
  * covers both shapes on the main thread, and this module deliberately covers the
  * one that has to survive being bundled a SECOND time, as a Worker entry point.
  *
- * `stateMode` is left to the caller and revm serves `'none'` only (the default),
- * refusing anything else at `createNode()`. That constraint crosses the thread
- * boundary unchanged: the refusal simply happens in here, and comlink reports it
- * to the caller of `createWorkerNode()`.
+ * `computeStateRoot` is left to the caller, and revm serves it either way (ADR
+ * 0014). Anything revm REFUSES at `createNode()` (a hardfork it cannot cost, ADR
+ * 0008) crosses the thread boundary unchanged: the refusal simply happens in
+ * here, and comlink reports it to the caller of `createWorkerNode()`.
  */
 import {exposeNode} from 'webevm/worker-host';
 import {createRevmEngine} from 'webevm/revm';

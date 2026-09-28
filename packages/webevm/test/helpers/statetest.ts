@@ -1,10 +1,10 @@
 /**
  * statetest.ts — TRACK B conformance: run real `ethereum/tests` GeneralStateTests
- * against the slim node's opt-in `stateMode:'trie'` and assert the post-state
+ * against the slim node's opt-in `computeStateRoot: true` and assert the post-state
  * Merkle-Patricia ROOT (and `keccak(RLP(logs))`) match the fixture's expected
  * values. This is the STRONGEST spec-conformance signal — it verifies exactly
- * what the canonical fixtures verify — and it is only possible because trie mode
- * produces a real state root (the default `'none'` mode has none by design).
+ * what the canonical fixtures verify, and it is only possible because that option
+ * produces a real state root (the default computes none, by design).
  *
  * How a fixture maps onto the node (no full retesteth machinery needed):
  *   - `pre`  -> createNode({initialState}) (full balance/nonce/code/storage),
@@ -161,7 +161,7 @@ export async function runStateTestFixture(
 			// Fresh node per case (each starts from the same `pre`).
 			const node = await createNode({
 				chainId,
-				stateMode: 'trie',
+				computeStateRoot: true,
 				miningConfig: {type: 'auto'},
 				initialState,
 				blockEnv,

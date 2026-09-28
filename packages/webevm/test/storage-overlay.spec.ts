@@ -1,5 +1,5 @@
 /**
- * storage-overlay.spec.ts — the node's `stateMode:'none'` storage is per-account
+ * storage-overlay.spec.ts: the node's storage is per-account
  * with a per-checkpoint OVERLAY, and this is the bar that says it is CORRECT
  * before anything says it is fast.
  *
@@ -116,6 +116,13 @@ test('storage overlays: checkpoint/commit/revert semantics, the readers, and the
 	);
 	expect(c.loadedSenderBalance).not.toBe('0x0');
 	expect(c.loadedReloadedDumpMatches).toBe(true);
+	// The fixture is also an OLD DUMP: it carries the informational mode field
+	// (`"none"`) the node wrote before `computeStateRoot` replaced the mode
+	// option. It loads (the reads above) with that field ignored, and a dump
+	// written now no longer carries it: it is the fixture's ONE top-level key a
+	// fresh dump lacks. (Named by its value rather than its key so that the old
+	// option's name appears only in the fixture itself.)
+	expect(Object.values(c.fixtureOnlyTopLevelFields)).toEqual(['none']);
 
 	// ---- 6. end to end through the node's own surface ----
 	expect(c.revertedTxWroteNothing).toBe(

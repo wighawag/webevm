@@ -10,7 +10,8 @@
  * routes the history batteries are proven against) is driven twice with the
  * same options: on a main-thread node (the REFERENCE, asked through
  * `node.request`) and on a worker-hosted node. The two are asserted to end in
- * the same `dumpState`. Then every question is asked at every block K from 0 to
+ * the same state (`stateOfDump` of their `dumpState`s: state, history and block
+ * count, not the wall-clock-dependent block hashes). Then every question is asked at every block K from 0 to
  * the head of:
  *
  *   - `reference`: the main-thread node's `request`;
@@ -43,7 +44,7 @@ import {
 	SENDER,
 	word,
 } from './change-set.js';
-import {keysOfDump, readAll} from './state-history.js';
+import {keysOfDump, readAll, stateOfDump} from './state-history.js';
 import {executeAll, READER} from './historical-call.js';
 import type {ConsumerApi} from './serve-on-port-worker.js';
 
@@ -151,9 +152,14 @@ export async function runStateHistoryTransportChecks(
 	const consumer = wrap<ConsumerApi>(consumerWorker);
 	try {
 		await runChangeSetChain(worker, async () => {});
+		// The STATE, history and block count, not the whole dump: genesis is
+		// stamped with the wall clock in whole seconds, so two nodes created
+		// either side of a second boundary hash every block differently while
+		// holding identical state (see `stateOfDump`). Comparing whole dumps made
+		// this fail about one run in four.
 		const sameState =
-			JSON.stringify(await worker.dumpState()) ===
-			JSON.stringify(await reference.dumpState());
+			stateOfDump(await worker.dumpState()) ===
+			stateOfDump(await reference.dumpState());
 
 		// ---- ports: one served by each node, read by the consumer worker ----
 		const handOff = async (node: SlimNode, id: string) => {

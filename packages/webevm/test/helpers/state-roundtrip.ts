@@ -46,7 +46,7 @@
  *
  * WHY THE DUMP/LOAD ROUND TRIP LIVES HERE rather than in ./slim-node-checks.ts,
  * which has had one since long before there were engines. That file is a
- * multi-mode HONESTY suite: it builds `stateMode:'trie'` nodes and several stub
+ * multi-mode HONESTY suite: it builds `computeStateRoot: true` nodes and several stub
  * engines whose whole purpose is to be refused, so parameterising it by engine
  * would mean either dropping its trie half (relaxing an assertion) or running that
  * half on the default engine while claiming the injected one was under test. Its

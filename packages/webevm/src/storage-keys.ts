@@ -1,5 +1,5 @@
 /**
- * storage-keys.ts: the node's STORAGE KEY encoding (every state mode), and the
+ * storage-keys.ts: the node's STORAGE KEY encoding (on every node), and the
  * ONE place either side of it is allowed to build a key.
  *
  * A storage key here is **PACKED**: two bytes per UTF-16 code unit, so an
@@ -45,7 +45,7 @@
  * to that width rather than encoding it ambiguously. Normalising is safe and
  * unreachable in practice: `@ethereumjs/evm` always hands over a 32-byte slot
  * key, every caller in `src/node.ts` pads to 32 first, and `MerkleStateManager`
- * (the other state mode) REFUSES a key that is not 32 bytes at all — so a short
+ * (which trie mode, as it was then called, ran on) REFUSES a key that is not 32 bytes at all, so a short
  * key names the slot it obviously means instead of an unreadable one.
  *
  * ## What this is NOT the key format for

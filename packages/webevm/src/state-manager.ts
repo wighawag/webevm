@@ -1,6 +1,6 @@
 /**
- * state-manager.ts: the node's state manager, in EVERY state mode: a
- * `stateMode:'trie'` node runs on it too and derives its trie from it
+ * state-manager.ts: the node's state manager, on EVERY node: a
+ * `computeStateRoot: true` node runs on it too and derives its trie from it
  * (./derived-trie.ts, ADR 0014).
  *
  * `@ethereumjs/statemanager@10.1.2`'s `SimpleStateManager` keeps storage in ONE
@@ -109,10 +109,11 @@
  * the storage is WIPED by the `clearStorage` above, which is what the reference
  * spec specifies (EIP-684 plus the Yellow Paper, execution-specs PR #3508) and
  * what revm does through this same state. A nonce or code at the target is still
- * a collision on both engines. Every node follows it, in both state modes,
- * because every node runs on this class: `stateMode:'trie'` derives its trie from
- * this state rather than running on `MerkleStateManager` (whose real
- * `storageRoot` used to make trie mode refuse the creation, EIP-7610, the one
+ * a collision on both engines. Every node follows it, with or without
+ * `computeStateRoot`, because every node runs on this class: a root-computing
+ * node derives its trie from this state rather than running on
+ * `MerkleStateManager` (whose real `storageRoot` used to make trie mode, as it
+ * was then called, refuse the creation, EIP-7610, the one
  * behaviour that differed by mode). Decided with the user 2026-09-28; the
  * evidence is
  * `work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`
@@ -933,14 +934,14 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * clearing) left every slot of the dead account READABLE at its address, and
 	 * `dumpState` kept serialising them. Measured through the node's own surface:
 	 * after a contract that writes slot 0 and selfdestructs in the same
-	 * transaction, `eth_getStorageAt` answered `0x2a` in `stateMode:'none'` and
-	 * `0x0` in `stateMode:'trie'` (which then ran on `MerkleStateManager`)
+	 * transaction, `eth_getStorageAt` answered `0x2a` on a node computing no root and
+	 * `0x0` on one computing a root (which then ran on `MerkleStateManager`)
 	 * (`docs/spikes/revm-write-callbacks-reproduce-the-post-state/measurements.md`).
 	 *
 	 * A DELETED ACCOUNT HAS NO STORAGE, in a trie by construction: the account is
 	 * removed and its storage trie goes with it. This makes the flat state, which
 	 * every node now runs on, say the same thing (the derived trie of
-	 * `stateMode:'trie'` sees this clear as a storage-cleared change), and it is
+	 * a `computeStateRoot` node sees this clear as a storage-cleared change), and it is
 	 * the reason the revm
 	 * engine — whose host is handed `clearStorage` then `removeAccount` for exactly
 	 * these two cases, with revm's commit semantics already applied — now leaves

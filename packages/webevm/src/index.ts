@@ -15,7 +15,6 @@ export type {
 	ServedPort,
 	NodeOptions,
 	MiningConfig,
-	StateMode,
 	SenderMode,
 	StateHistoryOptions,
 	// The engine seam: implement `Engine` to put a different EVM behind the node —

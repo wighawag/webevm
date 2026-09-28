@@ -1,6 +1,6 @@
 /**
- * storage-overlay.ts — the correctness bar for the node's `stateMode:'none'`
- * storage representation (`src/state-manager.ts`).
+ * storage-overlay.ts: the correctness bar for the node's storage
+ * representation (`src/state-manager.ts`).
  *
  * CORRECTNESS BEFORE SPEED, in that order. Storage is per-account with a
  * per-checkpoint OVERLAY, which is a real change to how a checkpoint, a commit
@@ -718,6 +718,12 @@ export async function runStorageOverlayChecks(): Promise<
 		out.dumpStateByteIdenticalToFlatLayout =
 			stateOf(dumped) === stateOf(fixture);
 		out.dumpStateStorage = JSON.stringify(dumped.storage);
+		// The top-level fields the OLD dump carries and a new one does not: the
+		// informational mode field, no longer written since `computeStateRoot`
+		// replaced the mode option, and ignored on load.
+		out.fixtureOnlyTopLevelFields = Object.fromEntries(
+			Object.entries(flatLayoutDump).filter(([key]) => !(key in dumped)),
+		);
 		out.fixtureStorage = JSON.stringify(fixture.storage);
 
 		// ...and a state dumped by the PREVIOUS version loads into this one.

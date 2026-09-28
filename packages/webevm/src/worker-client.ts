@@ -75,14 +75,14 @@ export async function createWorkerNode(
 	}
 	const api = wrap<NodeWorkerApi>(worker);
 	const remote = await api.createNode(nodeOptions);
-	// stateMode/senderMode/engine are plain values on the node; over comlink
+	// computeStateRoot/senderMode/engine are plain values on the node; over comlink
 	// they read as promises.
 	//
 	// NO `as any` HERE, and that is load-bearing. The remote is a `SlimNode` (the
 	// one proxy in ./worker-host.ts is typed as one), so these three reads are
 	// CHECKED: `senderMode` was silently absent from that proxy for a month, and
 	// what hid it from the compiler was the cast that used to be on this line.
-	const stateMode = await remote.stateMode;
+	const computeStateRoot = await remote.computeStateRoot;
 	const senderMode = await remote.senderMode;
 	const engineInfo = await remote.engine;
 
@@ -91,7 +91,7 @@ export async function createWorkerNode(
 		mine: () => remote.mine(),
 		dumpState: () => remote.dumpState(),
 		loadState: (s: SerializedState) => remote.loadState(s),
-		stateMode,
+		computeStateRoot,
 		senderMode,
 		engine: engineInfo,
 		getStateRoot: () => remote.getStateRoot(),

@@ -1,9 +1,9 @@
 /**
- * derived-trie.ts: the Merkle-Patricia trie a `stateMode:'trie'` node DERIVES
+ * derived-trie.ts: the Merkle-Patricia trie a `computeStateRoot: true` node DERIVES
  * from its flat state, and nothing else.
  *
  * Every node runs on ONE state representation: the flat
- * `OverlayStorageStateManager` (./state-manager.ts). A node in trie mode
+ * `OverlayStorageStateManager` (./state-manager.ts). A node with `computeStateRoot: true`
  * ADDITIONALLY keeps this object, which mirrors that state as a real Ethereum
  * state trie so the node can report a real state root. The decision and what it
  * replaced (`MerkleStateManager` as the node's state manager) are in
@@ -44,7 +44,7 @@
  * the flat state's stacks) and the node calls them only at the end of a mined
  * block and inside `getStateRoot()`, both inside the serialisation point. The
  * trie is async (`@ethereumjs/mpt`), and that costs no opcode anything because
- * no engine ever reads it: this is why revm can run in trie mode.
+ * no engine ever reads it: this is why revm can run on a root-computing node.
  *
  * ## Old nodes are pruned
  *
@@ -72,7 +72,7 @@ import {
 
 /**
  * How many {@link DerivedStateTrie} objects this module has ever created. TEST
- * ONLY: it is how `'none'` mode is PROVEN to do no trie work (not one is created
+ * ONLY: it is how a node without `computeStateRoot` is PROVEN to do no trie work (not one is created
  * by a node that does not compute roots), which a flag on the node could only
  * claim.
  */

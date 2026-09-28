@@ -1,11 +1,11 @@
 /**
  * statetest.spec.ts — TRACK B conformance: run real `ethereum/tests`
  * GeneralStateTests (vendored under tests/fixtures, pinned tag v17.0) against the
- * slim node's opt-in `stateMode:'trie'` in real Chromium, asserting the post-state
+ * slim node's opt-in `computeStateRoot: true` in real Chromium, asserting the post-state
  * Merkle-Patricia ROOT and `keccak(RLP(logs))` match each fixture's expected
  * Cancun values. This is the strongest spec-conformance signal — it verifies
- * exactly what the canonical fixtures verify — and is only possible because trie
- * mode produces a real state root (the `'none'` default has none by design).
+ * exactly what the canonical fixtures verify, and is only possible because that
+ * option produces a real state root (the default computes none, by design).
  *
  * The fixture JSONs are read here in Node and handed to the page via params; the
  * in-browser runner (src/statetest.ts) loads each `pre` via the node's
@@ -41,7 +41,7 @@ test.beforeAll(async () => {
 	);
 });
 
-test('slim-node stateMode:trie passes real ethereum/tests GeneralStateTests (post-state root + logs)', async ({
+test('slim-node computeStateRoot passes real ethereum/tests GeneralStateTests (post-state root + logs)', async ({
 	page,
 }) => {
 	const h = await mountHarness(page, {
