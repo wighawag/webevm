@@ -1,8 +1,8 @@
 /**
  * rpc-params.spec.ts: PARAMETERS THAT USED TO BE IGNORED ARE HONOURED OR REFUSED.
  *
- * `eth_call` / `eth_estimateGas` state overrides (default engine, in 'none' and
- * 'trie' mode), `eth_getLogs` `blockHash` and `eth_feeHistory` `newestBlock`.
+ * `eth_call` / `eth_estimateGas` state overrides (default engine, without and
+ * with `computeStateRoot`), `eth_getLogs` `blockHash` and `eth_feeHistory` `newestBlock`.
  * Each was silently dropped before, so the node answered a different question
  * from the one asked. The battery is `helpers/rpc-params.ts`; the revm half of
  * the override battery is `revm-rpc-params.spec.ts`.
@@ -31,8 +31,8 @@ test('state overrides, eth_getLogs blockHash and eth_feeHistory newestBlock are 
 	console.log('[rpc-params]', JSON.stringify(c, null, 2));
 	expect(r.errors).toEqual([]);
 
-	assertStateOverrides(c.overridesNone, "stateMode 'none'");
-	assertStateOverrides(c.overridesTrie, "stateMode 'trie'");
+	assertStateOverrides(c.overridesNone, 'without computeStateRoot');
+	assertStateOverrides(c.overridesTrie, 'computeStateRoot: true');
 
 	const l = c.logsAndFeeHistory;
 	const [first, second] = l.incrementBlocks;

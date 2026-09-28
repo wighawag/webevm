@@ -168,9 +168,10 @@ export async function slimNodeHonestyChecks() {
 	).toString();
 	out.restoredBlockNumber = Number(await pub2.getBlockNumber());
 
-	// 5) optional state-root mode: 'none' has no root (throws); 'trie' produces a
-	// REAL Merkle-Patricia root, and both modes agree on the computed result.
-	out.noneModeStateRoot = node.stateMode === 'none' ? 'none' : 'unexpected';
+	// 5) optional state root: without `computeStateRoot` there is no root
+	// (throws); with it the node produces a REAL Merkle-Patricia root, and both
+	// agree on the computed result.
+	out.noneModeComputesNoRoot = node.computeStateRoot === false;
 	let noneThrows = false;
 	try {
 		await node.getStateRoot();
@@ -181,7 +182,7 @@ export async function slimNodeHonestyChecks() {
 
 	const trieNode = await createNode({
 		chainId: CHAIN_ID,
-		stateMode: 'trie',
+		computeStateRoot: true,
 		miningConfig: {type: 'auto'},
 		initialBalances: {[account.address]: 10n ** 24n},
 	});
@@ -260,19 +261,23 @@ const engineThatCannotStart: Engine = {
 };
 
 /**
- * An engine that serves `stateMode:'none'` and REFUSES anything else — the
- * generic "this engine cannot serve your configuration" shape. It is a stub on
- * purpose: `webevm/revm` is the real INSTANCE of this (it refuses
- * `'trie'`, asserted in revm-engine.spec.ts); what is pinned here is the
- * node-side mechanism, which any third-party engine relies on.
+ * An engine that serves ONE chain id and REFUSES any other: the generic "this
+ * engine cannot serve your configuration" shape, read off the `EngineContext`
+ * at `connect`. It is a stub on purpose: `webevm/revm` is a real INSTANCE of
+ * this (it refuses a hardfork it cannot cost, ADR 0008; it used to refuse trie
+ * mode, until ADR 0014); what is pinned here is the node-side mechanism, which
+ * any third-party engine relies on. (It refused a state mode until the
+ * context stopped carrying one, 2026-09-28: no engine needs to know whether the
+ * node computes a state root.)
  */
-function makeNoneOnlyEngine(): Engine {
+function makeOneChainEngine(): Engine {
 	return {
-		id: 'test-engine-none-only',
+		id: 'test-engine-one-chain',
 		connect(ctx) {
-			if (ctx.stateMode !== 'none') {
+			const chainId = ctx.common.chainId();
+			if (chainId !== BigInt(CHAIN_ID)) {
 				throw new Error(
-					`test-engine-none-only cannot serve stateMode:'${ctx.stateMode}'`,
+					`test-engine-one-chain cannot serve chain id ${chainId}`,
 				);
 			}
 		},
@@ -280,7 +285,7 @@ function makeNoneOnlyEngine(): Engine {
 			return {returnValue: new Uint8Array(), executionGasUsed: 0n};
 		},
 		async transact(): Promise<TransactionResult> {
-			throw new Error('test-engine-none-only: no transaction is mined here');
+			throw new Error('test-engine-one-chain: no transaction is mined here');
 		},
 	};
 }
@@ -310,17 +315,15 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	});
 
 	// 6b) a configuration THIS engine cannot serve is refused at construction...
-	out.engineRefusedMode = await probeCreate({
-		chainId: CHAIN_ID,
-		stateMode: 'trie',
-		engine: makeNoneOnlyEngine(),
+	out.engineRefusedConfiguration = await probeCreate({
+		chainId: 1,
+		engine: makeOneChainEngine(),
 	});
-	// ...and the SAME engine comes up for the mode it does serve, so the refusal
-	// is about the configuration rather than about the engine.
-	out.engineServedMode = await probeCreate({
+	// ...and the SAME engine comes up for the configuration it does serve, so the
+	// refusal is about the configuration rather than about the engine.
+	out.engineServedConfiguration = await probeCreate({
 		chainId: CHAIN_ID,
-		stateMode: 'none',
-		engine: makeNoneOnlyEngine(),
+		engine: makeOneChainEngine(),
 	});
 
 	// 6c) an object that is not an Engine is refused at construction too —
@@ -344,7 +347,7 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	// nothing measuring it. It is the same class of mistake (a half-built engine, a
 	// typo, a property that holds a value instead of a method), and a refusal nothing
 	// measures is one refactor away from disappearing.
-	const readOnlyEngine = makeNoneOnlyEngine() as Partial<Engine>;
+	const readOnlyEngine = makeOneChainEngine() as Partial<Engine>;
 	delete readOnlyEngine.transact;
 	out.engineWithoutTransact = await probeCreate({
 		chainId: CHAIN_ID,
@@ -352,7 +355,7 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	});
 	out.engineWithBrokenTransact = await probeCreate({
 		chainId: CHAIN_ID,
-		engine: {...makeNoneOnlyEngine(), transact: 'nope'} as any,
+		engine: {...makeOneChainEngine(), transact: 'nope'} as any,
 	});
 
 	// 6d) the WORKER path. `WorkerNodeOptions extends NodeOptions`, so `engine` is
@@ -371,7 +374,7 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 			chainId: CHAIN_ID,
 			// `engine` is typed `never` on this path, so TypeScript stops it at compile
 			// time; the cast is how a JS consumer (who has no compile step) arrives.
-			engine: makeNoneOnlyEngine() as never,
+			engine: makeOneChainEngine() as never,
 		});
 		out.workerEngine = `DID_NOT_THROW:${wnode.engine.id}`;
 	} catch (e) {
@@ -391,7 +394,8 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	// here through the node's PUBLIC surface: seed slot 0, then deploy onto that
 	// exact address.
 	//
-	// BOTH MODES follow the reference spec (EIP-684 plus the Yellow Paper,
+	// BOTH ('none' and 'trie' below: without and with `computeStateRoot`) follow
+	// the reference spec (EIP-684 plus the Yellow Paper,
 	// execution-specs PR #3508): a zero-nonce, code-less target that holds storage
 	// is NOT a collision, so the creation proceeds and the storage is WIPED. 'trie'
 	// used to REJECT it (EIP-7610, from `MerkleStateManager`'s real storageRoot);
@@ -400,7 +404,7 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	for (const mode of ['none', 'trie'] as const) {
 		const n = await createNode({
 			chainId: CHAIN_ID,
-			stateMode: mode,
+			computeStateRoot: mode === 'trie',
 			miningConfig: {type: 'auto'},
 			initialBalances: {[account.address]: 10n ** 24n},
 		});
@@ -462,12 +466,12 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 		await n.dispose();
 	}
 
-	// 8) a SELFDESTRUCTED account's storage is GONE, in both state modes.
-	// `SimpleStateManager.deleteAccount` tombstones the account and never touches
-	// storage (it has no per-account index to clear with), so `stateMode:'none'`
-	// used to answer a destroyed contract's slot with its LAST VALUE while
-	// `stateMode:'trie'` — where deleting the account takes its storage trie with it
-	// — answered zero. Measured through this exact surface before the fix: `0x2a`
+	// 8) a SELFDESTRUCTED account's storage is GONE, with and without
+	// `computeStateRoot`. `SimpleStateManager.deleteAccount` tombstones the account
+	// and never touches storage (it has no per-account index to clear with), so a
+	// node computing no root used to answer a destroyed contract's slot with its
+	// LAST VALUE while a root-computing node (then on `MerkleStateManager`, where
+	// deleting the account takes its storage trie with it) answered zero. Measured through this exact surface before the fix: `0x2a`
 	// versus `0x0`
 	// (docs/spikes/revm-write-callbacks-reproduce-the-post-state/measurements.md).
 	// `src/state-manager.ts` now clears on delete, so both modes say zero and the
@@ -485,7 +489,7 @@ async function engineSeamHonestyChecks(): Promise<Record<string, unknown>> {
 	for (const mode of ['none', 'trie'] as const) {
 		const n = await createNode({
 			chainId: CHAIN_ID,
-			stateMode: mode,
+			computeStateRoot: mode === 'trie',
 			miningConfig: {type: 'auto'},
 			initialBalances: {[account.address]: 10n ** 24n},
 		});

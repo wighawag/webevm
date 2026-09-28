@@ -9,10 +9,10 @@
  * EVM answers.
  *
  * What it measures, in the order it measures it:
- *   1. the node's identity ACROSS the boundary (`engine.id`, `stateMode`,
- *      `senderMode`; the engine id is what the node was BUILT with, so it is
- *      necessary but weak on its own), plus a SECOND worker node in
- *      `stateMode:'trie'`, which revm serves (the trie is derived from the flat
+ *   1. the node's identity ACROSS the boundary (`engine.id`,
+ *      `computeStateRoot`, `senderMode`; the engine id is what the node was BUILT with, so it is
+ *      necessary but weak on its own), plus a SECOND worker node with
+ *      `computeStateRoot: true`, which revm serves (the trie is derived from the flat
  *      state, ADR 0014; it used to be refused here), reporting a real root
  *      across the boundary;
  *   2. REFERENCE EXECUTION GAS through the boundary, on a freshly deployed
@@ -84,12 +84,12 @@ export async function revmWorkerRoundtrip(workerUrl: string, sumTo: number) {
 
 	const results: Record<string, unknown> = {
 		engineId: node.engine?.id,
-		stateMode: node.stateMode,
+		computeStateRoot: node.computeStateRoot,
 		senderMode: node.senderMode,
 	};
 
-	// ---- trie mode, on revm, INSIDE the Worker ----
-	// revm serves `stateMode:'trie'` (the trie is derived from the flat state
+	// ---- computeStateRoot, on revm, INSIDE the Worker ----
+	// revm serves `computeStateRoot: true` (the trie is derived from the flat state
 	// between blocks and no engine reads it, ADR 0014; this used to be the
 	// refusal the recipe asserted). Built inside the Worker, it must still be
 	// revm, and its root must cross the boundary as a real one.
@@ -98,12 +98,12 @@ export async function revmWorkerRoundtrip(workerUrl: string, sumTo: number) {
 		const trieNode = await createWorkerNode({
 			worker: trieWorker,
 			chainId: CHAIN_ID,
-			stateMode: 'trie',
+			computeStateRoot: true,
 		});
 		await trieNode.mine();
 		results.trieServed = {
 			engineId: trieNode.engine?.id,
-			stateMode: trieNode.stateMode,
+			computeStateRoot: trieNode.computeStateRoot,
 			root: await trieNode.getStateRoot(),
 		};
 		await trieNode.dispose();

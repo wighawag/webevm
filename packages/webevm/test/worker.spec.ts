@@ -56,7 +56,7 @@ test('slim-node over a comlink Worker: same API + main-thread non-blocking', asy
 	// `'recover' | 'trusted'`; worker-client's `as any` hid it from the compiler
 	// and nothing here asserted it. Assert the CLASS, not just the instance.
 	expect(r.results.senderMode).toBe('recover');
-	expect(r.results.stateMode).toBe('none');
+	expect(r.results.computeStateRoot).toBe(false);
 	// ...and the SAME question with no field named at all: the Worker-backed node
 	// is compared field for field against a main-thread `createNode()`, so a field
 	// added to `SlimNode` after this line was written is covered by it. This is the

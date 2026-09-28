@@ -4,7 +4,7 @@
  *
  * WHY differential (not ethereum/tests fixtures): GeneralStateTests /
  * execution-spec-tests verify a tx by comparing the post-state Merkle-Patricia
- * TRIE ROOT (+ keccak(RLP(logs))). The default slim node (`stateMode:'none'`,
+ * TRIE ROOT (+ keccak(RLP(logs))). The default slim node (no `computeStateRoot`,
  * SimpleStateManager) has NO trie/root on purpose and throws on getStateRoot, so
  * those fixtures cannot validate it without reintroducing a trie — and VMTests
  * (the one trie-free format) is frozen at Homestead. The legacy effectiveGasPrice
@@ -65,7 +65,6 @@ import {
 	type Engine,
 	type EngineContext,
 	type SlimNode,
-	type StateMode,
 } from '../../src/index.js';
 import {counterAbi, counterBytecode} from './counter.js';
 import {probeAbi, probeBytecode} from './probe.js';
@@ -481,8 +480,16 @@ async function sign1559Unfunded(args: any): Promise<string> {
  */
 export type EngineFactory = () => Promise<Engine>;
 
+/**
+ * The two ways the battery builds its nodes, as short result labels: `'none'`
+ * computes no state root (the default) and `'trie'` passes `computeStateRoot:
+ * true`. Test-local labels only; the node's option is the boolean.
+ */
+export type RootLabel = 'none' | 'trie';
+
 export interface BatteryReport {
-	stateMode: StateMode;
+	/** Whether the battery's nodes were created with `computeStateRoot: true`. */
+	computeStateRoot: boolean;
 	/** Which EVM the node was created with, as the node itself reports it. */
 	engineId: string;
 	/**
@@ -571,11 +578,12 @@ export function countingEngines(
 }
 
 // ---------------------------------------------------------------------------
-// Run the WHOLE battery against one slim-node state mode, diffing every step
+// Run the WHOLE battery against one slim-node configuration (with or without
+// `computeStateRoot`), diffing every step
 // against the reference. Returns a structured report of mismatches (empty = pass).
 // ---------------------------------------------------------------------------
 async function runBattery(
-	stateMode: StateMode,
+	computeStateRoot: boolean,
 	installedEngine?: EngineFactory,
 ): Promise<BatteryReport> {
 	// EVERY node below is built through THIS factory, so the count covers the whole
@@ -591,7 +599,7 @@ async function runBattery(
 			: undefined;
 	const node: SlimNode = await createNode({
 		chainId: CHAIN_ID,
-		stateMode,
+		computeStateRoot,
 		miningConfig: {type: 'auto'},
 		initialBalances: {[account.address]: GENESIS_BALANCE},
 		engine: await makeEngine?.(),
@@ -1218,7 +1226,7 @@ async function runBattery(
 		const m: string[] = [];
 		const node2 = await createNode({
 			chainId: CHAIN_ID,
-			stateMode,
+			computeStateRoot,
 			miningConfig: {type: 'manual'},
 			initialBalances: {[account.address]: GENESIS_BALANCE},
 			// Its OWN engine: one engine instance serves one node.
@@ -1329,7 +1337,7 @@ async function runBattery(
 		const m: string[] = [];
 		const node5 = await createNode({
 			chainId: CHAIN_ID,
-			stateMode,
+			computeStateRoot,
 			miningConfig: {type: 'manual'},
 			initialBalances: {[account.address]: GENESIS_BALANCE},
 			// Its OWN engine: one engine instance serves one node.
@@ -1530,7 +1538,7 @@ async function runBattery(
 		// engine: one engine instance serves one node).
 		const node3 = await createNode({
 			chainId: CHAIN_ID,
-			stateMode,
+			computeStateRoot,
 			miningConfig: {type: 'manual'},
 			blockEnv: {
 				coinbase: BLOCK_ENV_COINBASE,
@@ -1645,7 +1653,7 @@ async function runBattery(
 		const m: string[] = [];
 		const node4 = await createNode({
 			chainId: CHAIN_ID,
-			stateMode,
+			computeStateRoot,
 			miningConfig: {type: 'manual'},
 			initialBalances: {[account.address]: GENESIS_BALANCE},
 			engine: await makeEngine?.(),
@@ -1862,7 +1870,7 @@ async function runBattery(
 		// ---- a node at the DEFAULT block gas limit refuses the over-limit tx ----
 		const nodeDefault = await createNode({
 			chainId: CHAIN_ID,
-			stateMode,
+			computeStateRoot,
 			miningConfig: {type: 'auto'},
 			initialBalances: {[account.address]: GENESIS_BALANCE},
 			engine: await makeEngine?.(),
@@ -1939,7 +1947,7 @@ async function runBattery(
 		// ---- ...and a node CONFIGURED for it mines the very same transaction ----
 		const nodeRaised = await createNode({
 			chainId: CHAIN_ID,
-			stateMode,
+			computeStateRoot,
 			miningConfig: {type: 'auto'},
 			blockGasLimit: RAISED_BLOCK_GAS_LIMIT,
 			initialBalances: {[account.address]: GENESIS_BALANCE},
@@ -2293,41 +2301,50 @@ async function runBattery(
 	await node.dispose();
 
 	const totalMismatches = steps.reduce((n, s) => n + s.mismatches.length, 0);
-	return {stateMode, engineId, transactionsByEngine, steps, totalMismatches};
+	return {
+		computeStateRoot,
+		engineId,
+		transactionsByEngine,
+		steps,
+		totalMismatches,
+	};
 }
 
 export async function runConformance(): Promise<{
 	none: BatteryReport;
 	trie: BatteryReport;
 }> {
-	// Cover BOTH the default fast path ('none') and the trie path ('trie').
-	const none = await runBattery('none');
-	const trie = await runBattery('trie');
+	// Cover BOTH the default fast path ('none') and the root-computing path
+	// ('trie', `computeStateRoot: true`).
+	const none = await runBattery(false);
+	const trie = await runBattery(true);
 	return {none, trie};
 }
 
 export interface EngineConformanceReport {
-	/** The battery, once per state mode, every one of them on the injected engine. */
-	byMode: Record<StateMode, BatteryReport>;
+	/** The battery, without and with `computeStateRoot`, both on the injected engine. */
+	byMode: Record<RootLabel, BatteryReport>;
 	totalMismatches: number;
 }
 
 /**
- * Run the SAME battery with an injected engine, in EVERY state mode.
+ * Run the SAME battery with an injected engine, without AND with
+ * `computeStateRoot`.
  *
  * It used to run one mode and record the engine's refusal of the other: revm
- * could not serve `stateMode:'trie'` while that mode ran on `MerkleStateManager`
- * (ADR 0005). Every node now runs on the flat state and trie mode derives its
- * trie from it between blocks (ADR 0014), so there is no mode an engine has to
- * refuse and the battery covers both, on the engine under test, with nothing
- * relaxed. The trie-mode run is the one that holds the ROOTS revm's writes lead
+ * could not serve trie mode (as a root-computing node was then called) while it
+ * ran on `MerkleStateManager` (ADR 0005). Every node now runs on the flat state
+ * and a `computeStateRoot` node derives its trie from it between blocks (ADR
+ * 0014), so there is no configuration an engine has to refuse and the battery
+ * covers both, on the engine under test, with nothing relaxed. The
+ * `computeStateRoot` run is the one that holds the ROOTS revm's writes lead
  * to against the reference's post-state.
  */
 export async function runConformanceOnEngine(opts: {
 	makeEngine: EngineFactory;
 }): Promise<EngineConformanceReport> {
-	const none = await runBattery('none', opts.makeEngine);
-	const trie = await runBattery('trie', opts.makeEngine);
+	const none = await runBattery(false, opts.makeEngine);
+	const trie = await runBattery(true, opts.makeEngine);
 	return {
 		byMode: {none, trie},
 		totalMismatches: none.totalMismatches + trie.totalMismatches,

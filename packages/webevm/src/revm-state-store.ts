@@ -24,8 +24,8 @@
  * `dumpState` already does. The full cost and the alternatives that were
  * rejected are in
  * `docs/adr/0005-revm-reads-the-nodes-state-through-simplestatemanagers-stacks.md`.
- * Every node, `stateMode:'trie'` included, runs on this state manager (ADR 0014:
- * trie mode's trie is derived from it between blocks), so this store serves them
+ * Every node, `computeStateRoot: true` included, runs on this state manager (ADR
+ * 0014: a root-computing node's trie is derived from it between blocks), so this store serves them
  * all.
  *
  * Three consequences worth having in your head before editing this file:

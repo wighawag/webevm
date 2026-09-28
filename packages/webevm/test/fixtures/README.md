@@ -7,7 +7,7 @@ Two unrelated things live here. The `GeneralStateTests/` tree is vendored from
 
 Captured 2026-08-09 from the node as it shipped BEFORE
 [ADR 0009](../../../../docs/adr/0009-none-mode-storage-is-per-account-with-per-checkpoint-overlays.md)
-re-layered `stateMode:'none'` storage, i.e. while storage was still
+re-layered the node's storage, i.e. while storage was still
 `SimpleStateManager`'s one flat `${address}_${slot}` map.
 
 It exists because `dumpState` output is **persisted data** (IndexedDB, `loadState`
@@ -23,6 +23,8 @@ writes a slot, a cheat giving storage to an account that had none, and a cheat
 appending a slot to an account that had some — so it exercises grouping AND
 within-account ordering. `blocks` carries a wall-clock genesis timestamp, so it is
 not byte-compared; only the three state sections are.
+
+It is also the proof that an OLD dump still loads after `computeStateRoot` replaced the `'none' | 'trie'` mode option (2026-09-28): it carries the informational top-level mode field (`"none"`) that nodes wrote before then. A node no longer writes it and ignores it on load, and `../storage-overlay.spec.ts` asserts both (the load, and that this is the one top-level field a fresh dump lacks).
 
 **Do not regenerate it.** Its whole value is that it came from the older code; a
 fresh capture from the current build would assert nothing.
@@ -42,7 +44,7 @@ that commit, replay `buildFixtureNode`'s scenario, diff the three sections.
 These are a **small, hand-picked handful** of canonical Ethereum
 `GeneralStateTests` JSON files, copied verbatim, used by
 [`../statetest.spec.ts`](../statetest.spec.ts) to conformance-test the node's
-opt-in `stateMode:'trie'` against real spec fixtures (assert the post-state
+opt-in `computeStateRoot: true` against real spec fixtures (assert the post-state
 Merkle-Patricia root + `keccak(RLP(logs))` match the fixture's expected values).
 
 We vendor **only these files** (not the multi-hundred-MB repo).
@@ -72,5 +74,5 @@ permutation, plus the expected post-state `hash` (the MPT state root) and `logs`
 (`keccak(RLP(logs))`). The runner loads `pre` via the node's `initialState`
 option, applies `env` via `blockEnv`, submits `txbytes` through
 `eth_sendRawTransaction`, then compares `node.getStateRoot()` to `hash`. This only
-works in `stateMode:'trie'` (the `'none'` default has no root by design) — which is
-exactly the point of the opt-in trie mode.
+works with `computeStateRoot: true` (the default computes no root, by design), which is
+exactly the point of that opt-in.

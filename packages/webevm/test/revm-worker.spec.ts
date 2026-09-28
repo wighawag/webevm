@@ -97,13 +97,13 @@ test('revm in a Worker: the README recipe, executed', async ({page}) => {
 
 	// ---- the engine that answered lives in the WORKER, and it is revm ----
 	expect(c.engineId).toBe('revm-wasm');
-	expect(c.stateMode).toBe('none');
+	expect(c.computeStateRoot).toBe(false);
 	expect(c.senderMode).toBe('recover');
-	// ...and a trie-mode node built INSIDE the Worker is revm too, with a real
-	// root crossing the boundary (revm used to refuse trie mode; the trie is now
+	// ...and a `computeStateRoot` node built INSIDE the Worker is revm too, with a real
+	// root crossing the boundary (revm used to refuse it, as trie mode; the trie is now
 	// derived from the flat state, ADR 0014).
 	expect(c.trieServed.engineId).toBe('revm-wasm');
-	expect(c.trieServed.stateMode).toBe('trie');
+	expect(c.trieServed.computeStateRoot).toBe(true);
 	expect(c.trieServed.root).toMatch(/^0x[0-9a-f]{64}$/);
 	expect(BigInt(c.trieServed.root)).not.toBe(0n);
 

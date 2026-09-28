@@ -41,7 +41,7 @@ export function assertTrieDerived(c: Record<string, any>, label: string) {
 	expect(d.next.reloaded, label).toBe(d.next.original);
 	expect(d.nextDiffersFromBefore, label).toBe(true);
 
-	// ---- 'none' MODE DOES NO TRIE WORK ----
+	// ---- A NODE WITHOUT computeStateRoot DOES NO TRIE WORK ----
 	const n = c.noTrieInNoneMode;
 	expect(n.createdByNone, label).toBe(0);
 	// The control: the same probe counts a trie-mode node's trie.
@@ -49,7 +49,7 @@ export function assertTrieDerived(c: Record<string, any>, label: string) {
 	expect(n.getStateRoot, label).toBe('threw:-32004');
 	expect(n.header, label).toBe('0x' + '00'.repeat(32));
 
-	// ---- HISTORY COMPOSES WITH TRIE MODE ----
-	expect(c.history.stateMode, label).toBe('trie');
-	assertStateHistory(c.history, `${label} (trie mode)`);
+	// ---- HISTORY COMPOSES WITH computeStateRoot ----
+	expect(c.history.computeStateRoot, label).toBe(true);
+	assertStateHistory(c.history, `${label} (computeStateRoot)`);
 }

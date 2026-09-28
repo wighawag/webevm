@@ -1,5 +1,7 @@
 # `stateMode: 'none'` is the default, so the node normally has NO state root
 
+> **Renamed 2026-09-28** (`rename-statemode-to-computestateroot`): the `stateMode: 'none' | 'trie'` option is now `computeStateRoot: boolean` (default `false`), with no alias; `'trie'` below is `computeStateRoot: true` and `'none'` is a node without it. The decision recorded here (no state root by default, a real one as an explicit opt-in) is unchanged.
+
 A node needs a Merkle-Patricia trie only to produce a canonical `stateRoot`, and a local chain does not need one: nothing is being consensus-verified. So the default is `SimpleStateManager` (plain Maps, no trie), and block `stateRoot`/`receiptsRoot`/`transactionsRoot` are zero placeholders while `getStateRoot()` throws rather than inventing a value. `'trie'` stays available as an explicit opt-in.
 
 ## Considered Options

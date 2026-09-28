@@ -62,24 +62,6 @@ export interface PersistenceAdapter {
 }
 
 /**
- * Whether the node computes a state root. EVERY node runs on the same state (our
- * `SimpleStateManager` subclass: plain Maps, no trie); the mode only decides
- * whether a trie is DERIVED from it.
- * - `'none'` (DEFAULT): no trie, no state root, no trie work. Block
- *   `stateRoot`/`receiptsRoot`/`transactionsRoot` are zero placeholders (you are
- *   a local chain; canonical roots aren't needed) and `getStateRoot()` throws.
- * - `'trie'`: additionally keeps a Merkle-Patricia trie derived from the state,
- *   updated at the end of each block from the keys the block changed, and reports
- *   its REAL root in each block header and from `getStateRoot()`. That (a) lets
- *   the node be conformance-tested against `ethereum/tests` GeneralStateTests
- *   (they verify the post-state root), and (b) gives honest canonical block roots
- *   for consumers that need them. Execution never reads the trie, so it works on
- *   every engine (revm included) and behaves exactly as `'none'` in every other
- *   respect. See `docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md`.
- */
-export type StateMode = 'none' | 'trie';
-
-/**
  * Sender-derivation mode.
  * - `'recover'` (DEFAULT): derive the sender from the signature with ecrecover,
  *   exactly as a real node does. The tx is self-authenticating: a caller cannot
@@ -355,12 +337,6 @@ export interface EngineContext {
 	 * rather than an engine-side option to remember to pass.
 	 */
 	getBlockHash(blockNumber: bigint): Uint8Array | undefined;
-	/**
-	 * The node's state mode. An engine that cannot serve it must THROW here —
-	 * `connect` is called during `createNode()`, so the refusal lands at
-	 * construction rather than at the first opcode.
-	 */
-	readonly stateMode: StateMode;
 }
 
 /**
@@ -483,10 +459,28 @@ export interface EngineInfo {
 export interface NodeOptions {
 	/** EIP-155 chain id. Default 31337 (anvil/hardhat-style local). */
 	chainId?: number;
-	/** `'none'` (no state root, default) or `'trie'` (also derive a trie from
-	 *  the state and report its real root; unlocks GeneralStateTests
-	 *  conformance). See {@link StateMode}. */
-	stateMode?: StateMode;
+	/**
+	 * Whether the node computes a STATE ROOT. Default `false`. EVERY node runs on
+	 * the same state (our `SimpleStateManager` subclass: plain Maps, no trie);
+	 * this only decides whether a trie is DERIVED from it.
+	 * - `false` (DEFAULT): no trie, no state root, no trie work. Block
+	 *   `stateRoot`/`receiptsRoot`/`transactionsRoot` are zero placeholders (you
+	 *   are a local chain; canonical roots aren't needed) and `getStateRoot()`
+	 *   throws.
+	 * - `true`: additionally keep a Merkle-Patricia trie derived from the state,
+	 *   updated at the end of each block from the keys the block changed, and
+	 *   report its REAL root in each block header and from `getStateRoot()`. That
+	 *   (a) lets the node be conformance-tested against `ethereum/tests`
+	 *   GeneralStateTests (they verify the post-state root), and (b) gives honest
+	 *   canonical block roots for consumers that need them. Execution never reads
+	 *   the trie, so it works on every engine (revm included) and behaves exactly
+	 *   as a node without it in every other respect. See
+	 *   `docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md`.
+	 *
+	 * Only `true` turns it on; any other value (absent, `false`, or a non-boolean
+	 * passed from untyped code) leaves it off.
+	 */
+	computeStateRoot?: boolean;
 	/**
 	 * Sender derivation: `'recover'` (ecrecover, authenticated — DEFAULT) or
 	 * `'trusted'` (skip ecrecover, trust a caller-supplied `from`). See
@@ -518,8 +512,8 @@ export interface NodeOptions {
 	/**
 	 * Full genesis pre-state (address -> {balance, nonce, code, storage}). Richer
 	 * than `initialBalances` (which only sets balance). Used to load an arbitrary
-	 * starting state — e.g. a GeneralStateTest `pre` section — so that, in
-	 * `stateMode:'trie'`, `getStateRoot()` after a tx can be compared to the
+	 * starting state (e.g. a GeneralStateTest `pre` section) so that, with
+	 * `computeStateRoot: true`, `getStateRoot()` after a tx can be compared to the
 	 * fixture's expected post-state root. Applied at genesis, before block 0.
 	 */
 	initialState?: Record<string, GenesisAccount>;
@@ -573,7 +567,7 @@ export interface NodeOptions {
 	 * ABSENT MEANS OFF, and there is no default window: a node without it behaves
 	 * exactly as before (the head is served, anything below it refused) and pays
 	 * nothing. `N` must be a positive safe integer; anything else throws at
-	 * construction. It composes with `stateMode:'trie'`.
+	 * construction. It composes with `computeStateRoot: true`.
 	 *
 	 * THE COST is memory per changed key per retained block: the node keeps, for
 	 * each of the last N blocks, the value every account, code entry and storage
@@ -624,14 +618,14 @@ export interface SlimNode {
 	/** Subscribe to newHeads locally (used by eth_subscribe and consumers). */
 	onNewHead(cb: (head: {number: number; hash: string}) => void): () => void;
 	/**
-	 * Current canonical state root. In `'trie'` mode this is the REAL
+	 * Current canonical state root. With `computeStateRoot: true` this is the REAL
 	 * Merkle-Patricia root of the current state, `evm_set*` cheats since the last
-	 * block included (usable for GeneralStateTests conformance); in `'none'` mode
-	 * there is no trie so this throws (honest: there is no root to give).
+	 * block included (usable for GeneralStateTests conformance); without it there
+	 * is no trie so this throws (honest: there is no root to give).
 	 */
 	getStateRoot(): Promise<string>;
-	/** The state mode this node was created with. */
-	readonly stateMode: 'none' | 'trie';
+	/** Whether this node computes a state root (its `computeStateRoot` option). */
+	readonly computeStateRoot: boolean;
 	/** The sender mode this node was created with. */
 	readonly senderMode: SenderMode;
 	/**
@@ -690,14 +684,19 @@ export interface ServedPort {
  * The same holds for `history` (2026-09-28, `state-history-persistence`): an
  * OPTIONAL field, absent from every dump written before it and from every dump
  * of a node without `stateHistory`, so it is still `version: 1`.
+ *
+ * And for a field REMOVED (2026-09-28, `rename-statemode-to-computestateroot`):
+ * dumps written before the node's `computeStateRoot` option replaced the old
+ * `'none' | 'trie'` mode option carry that mode as an informational string
+ * field. It is no longer written and it was never read, so such a dump loads
+ * unchanged with the field ignored (proved by `test/dumpstate-layout.spec.ts`'s
+ * fixture, which still carries it), and the format is still `version: 1`.
  */
 export interface SerializedState {
 	version: 1;
 	chainId: number;
-	/** State mode the dump was produced in (informational). */
-	stateMode?: 'none' | 'trie';
-	/** The node's state, in every mode: address -> hex-encoded account/code/storage.
-	 *  A `'trie'` node's trie is not serialised; `loadState` rebuilds it. */
+	/** The node's state, on every node: address -> hex-encoded account/code/storage.
+	 *  A `computeStateRoot` node's trie is not serialised; `loadState` rebuilds it. */
 	accounts: Record<string, string>; // addr -> rlp/hex account
 	code: Record<string, string>; // addr -> code hex
 	storage: Record<string, Record<string, string>>; // addr -> (slot hex -> value hex)
@@ -759,7 +758,7 @@ export interface SerializedBlock {
 	gasUsed: string;
 	gasLimit: string;
 	baseFeePerGas: string;
-	/** Real Merkle-Patricia state root in `'trie'` mode; zero placeholder in `'none'`. */
+	/** Real Merkle-Patricia state root with `computeStateRoot: true`; zero placeholder without. */
 	stateRoot: string;
 	/**
 	 * The block's coinbase, under the name `eth_getBlockByNumber` reports it. Named

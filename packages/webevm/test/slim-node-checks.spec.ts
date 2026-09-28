@@ -7,9 +7,11 @@
  *     type-2 transaction, ABSENT (not `null`) on a legacy one.
  *   - Account/signing + unknown methods throw a real -32601 (never fake success).
  *   - dump/load persistence round-trips into a fresh node.
- *   - State-root mode: `'none'` throws / zero block root; `'trie'` produces a REAL
- *     Merkle-Patricia root that matches the block header; both modes agree.
- *   - A SELFDESTRUCTED account's storage is gone in BOTH state modes.
+ *   - State root: without `computeStateRoot` it throws / zero block root; with
+ *     `computeStateRoot: true` the node produces a REAL Merkle-Patricia root that
+ *     matches the block header; both agree. (Result labels below: `'none'` is a
+ *     node without `computeStateRoot`, `'trie'` one with it.)
+ *   - A SELFDESTRUCTED account's storage is gone with and without it.
  *   - Engine seam: an engine that cannot start, cannot serve the node's
  *     configuration, or is not an engine at all fails LOUDLY at construction
  *     (never a silent fallback to the default engine), and an engine handed to
@@ -23,7 +25,7 @@ import {mountHarness} from 'playwright-browser-harness';
 const here = dirname(fileURLToPath(import.meta.url));
 const cut = resolve(here, './helpers/cut.ts');
 
-test('node honesty + correctness (receipts, gaps, persistence, state-root mode)', async ({
+test('node honesty + correctness (receipts, gaps, persistence, state root)', async ({
 	page,
 }) => {
 	const h = await mountHarness(page, {
@@ -67,8 +69,10 @@ test('node honesty + correctness (receipts, gaps, persistence, state-root mode)'
 	expect(c.gap_unknown_method).toBe('threw:-32601');
 	// persistence round-trip
 	expect(c.restoredNumber).toBe(c.number);
-	// state-root mode: 'none' has no root (honest throw / zero block root); 'trie'
-	// gives a REAL Merkle-Patricia root in the node + the block header; both agree.
+	// state root: without `computeStateRoot` there is no root (honest throw /
+	// zero block root); `computeStateRoot: true` gives a REAL Merkle-Patricia
+	// root in the node + the block header; both agree.
+	expect(c.noneModeComputesNoRoot).toBe(true);
 	expect(c.noneModeGetStateRootThrows).toBe(true);
 	expect(c.noneBlockStateRootIsZero).toBe(true);
 	expect(c.trieModeNumber).toBe('3');
@@ -88,11 +92,15 @@ test('node honesty + correctness (receipts, gaps, persistence, state-root mode)'
 
 	// a configuration the engine cannot serve: refused at construction, carrying
 	// the engine's own reason...
-	expect(c.engineRefusedMode).not.toContain('DID_NOT_THROW');
-	expect(c.engineRefusedMode).toContain("stateMode:'trie'");
-	// ...while the SAME engine serves the mode it supports, so the refusal is about
-	// the configuration, not the engine.
-	expect(c.engineServedMode).toBe('DID_NOT_THROW:test-engine-none-only');
+	expect(c.engineRefusedConfiguration).not.toContain('DID_NOT_THROW');
+	expect(c.engineRefusedConfiguration).toContain(
+		'test-engine-one-chain cannot serve chain id 1',
+	);
+	// ...while the SAME engine serves the configuration it supports, so the
+	// refusal is about the configuration, not the engine.
+	expect(c.engineServedConfiguration).toBe(
+		'DID_NOT_THROW:test-engine-one-chain',
+	);
 
 	// an object that is not an Engine is refused at construction, not at the
 	// first read.
@@ -110,7 +118,7 @@ test('node honesty + correctness (receipts, gaps, persistence, state-root mode)'
 	] as string[]) {
 		expect(probe).not.toContain('DID_NOT_THROW');
 		expect(probe).toContain('transact');
-		expect(probe).toContain('test-engine-none-only');
+		expect(probe).toContain('test-engine-one-chain');
 		// ...and it says out loud that the default engine is NOT substituted, which is
 		// the fallback this contraction deleted.
 		expect(probe).toContain('@ethereumjs/evm');

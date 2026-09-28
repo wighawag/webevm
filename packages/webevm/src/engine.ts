@@ -278,7 +278,7 @@ export async function connectEngine(
 		throw new Error(
 			`webevm: the engine '${engine.id}' could not be connected, so the node was NOT created. ` +
 				`It is deliberately NOT replaced by the default @ethereumjs/evm engine: that node would work, return correct results, and run at a completely different speed from the one you asked for, silently. ` +
-				`Fix the configuration (this node is stateMode:'${context.stateMode}') or pass a different engine. Cause: ${message(err)}`,
+				`Fix the engine's configuration or pass a different engine. Cause: ${message(err)}`,
 			{cause: err},
 		);
 	}

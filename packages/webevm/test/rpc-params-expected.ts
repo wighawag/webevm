@@ -1,7 +1,7 @@
 /**
  * rpc-params-expected.ts: the assertions on the state-override battery
- * (helpers/rpc-params.ts), shared by the default-engine spec (run in 'none' AND
- * 'trie' mode) and the revm one, so the three runs are held to ONE contract.
+ * (helpers/rpc-params.ts), shared by the default-engine spec (run without AND
+ * with `computeStateRoot`) and the revm one, so the three runs are held to ONE contract.
  */
 import {expect} from '@playwright/test';
 

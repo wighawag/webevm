@@ -93,7 +93,8 @@ const collected: Record<string, unknown>[] = [];
  * RE-PINNED NINETEEN TIMES SINCE. Most recent first:
  *
  * 441.4 -> 442.3 KB raw / 133.0 -> 133.3 KB gzip, by
- * `trie-derived-from-the-flat-state`: `stateMode:'trie'` stops running on
+ * `trie-derived-from-the-flat-state`: trie mode (now `computeStateRoot: true`)
+ * stops running on
  * `MerkleStateManager` and runs on the same flat state as every node, with a
  * Merkle-Patricia trie DERIVED from it per block (ADR 0014). The 0.9 KB is the
  * new `src/derived-trie.ts` (a full build from the flat state, the per-block
@@ -101,8 +102,9 @@ const collected: Record<string, unknown>[] = [];
  * `@ethereumjs/mpt` and `@ethereumjs/rlp` directly, net of what left `src/node.ts`
  * (the `MerkleStateManager` branches, the `touchedAccounts` set and the trie-mode
  * dump). The trie library itself was already in the graph through
- * `@ethereumjs/statemanager`. In the CORE graph because `stateMode` is a
- * `createNode` option; a `'none'` node creates no trie. Still zero bytes of
+ * `@ethereumjs/statemanager`. In the CORE graph because the option
+ * (now `computeStateRoot`) is a `createNode` option; a node without it creates
+ * no trie. Still zero bytes of
  * `revm-wasm`.
  *
  * 439.9 -> 441.4 KB raw / 132.5 -> 133.0 KB gzip, by `state-history-persistence`:
@@ -136,7 +138,7 @@ const collected: Record<string, unknown>[] = [];
  * the per-key history lookups, and the refusal prose naming the oldest servable
  * block) plus `mergeChangeSetOlderWins`, factored out of the checkpoint commit in
  * `src/state-manager.ts`. It is in the CORE graph because the option is on
- * `createNode` for the default `stateMode:'none'`; off by default, a node without
+ * `createNode` for the default node; off by default, a node without
  * it seals nothing. Still zero bytes of `revm-wasm`.
  *
  * 432.0 -> 436.3 KB raw / 130.3 -> 131.4 KB gzip, by `state-change-set-capture`:
@@ -148,7 +150,7 @@ const collected: Record<string, unknown>[] = [];
  * now commits through, the restated `putCode` / `modifyAccountFields` and the
  * bottom-level `getAccount` copy) and the few lines in `src/node.ts` that take the
  * record per block and clear it for baselines. It is in the CORE graph because
- * this IS the default state manager for `stateMode:'none'`; recording is off by
+ * this IS the default node's state manager; recording is off by
  * default and costs a JS-only consumer nothing at run time
  * (`docs/spikes/state-change-set-capture/measurements.md`). Still zero bytes of
  * `revm-wasm`.
@@ -253,7 +255,7 @@ const collected: Record<string, unknown>[] = [];
  * Still zero bytes of `revm-wasm`.
  *
  * 421.1 -> 421.9 KB raw / 127.1 -> 127.4 KB gzip, by
- * `revm-state-store-packed-storage-keys`: the `stateMode:'none'` storage key is
+ * `revm-state-store-packed-storage-keys`: the default node's storage key is
  * now PACKED (two bytes per UTF-16 code unit) instead of `0x`-hex, which takes a
  * cold revm storage access from 1.31-1.33 µs to 0.36-0.39 µs
  * (`docs/spikes/revm-state-store-packed-storage-keys/measurements.md`). The 0.8
@@ -315,11 +317,11 @@ const collected: Record<string, unknown>[] = [];
  * 417.8 -> 417.9 KB raw (gzip unchanged at 126.0), by
  * `revm-write-callbacks-reproduce-the-post-state`:
  * `OverlayStorageStateManager.deleteAccount` now clears the account's storage as
- * well, so a `SELFDESTRUCT` (or an EIP-161 empty-account clearing) in
- * `stateMode:'none'` stops leaving a dead contract's slots readable at its
+ * well, so a `SELFDESTRUCT` (or an EIP-161 empty-account clearing) on
+ * the default node stops leaving a dead contract's slots readable at its
  * address. The 0.1 KB is a two-line override; it is in the CORE graph for the
  * same reason the two `state-manager.ts` re-pins below are (this IS the default
- * state manager for `stateMode:'none'`, i.e. every consumer who passes no
+ * state manager for the default node, i.e. every consumer who passes no
  * options), and it buys that consumer post-state that agrees with a trie and with
  * the revm engine instead of disagreeing with both
  * (`docs/adr/0007-...`, amended 2026-08-10). Still zero bytes of `revm-wasm`.
@@ -363,7 +365,7 @@ const collected: Record<string, unknown>[] = [];
  *
  * 413.7 -> 416.3 KB raw / 124.6 -> 125.4 KB gzip, by
  * `re-layer-storage-as-per-account-maps-with-per-frame-diffs`:
- * `src/state-manager.ts` re-layers `stateMode:'none'` storage as per-account maps
+ * `src/state-manager.ts` re-layers the default node's storage as per-account maps
  * with per-checkpoint OVERLAYS, so a checkpoint stops copying the whole storage
  * map (four transactions at 100,000 slots: 18-28x across two runs, and FLAT in
  * state size — ~12 ms whether state holds 1,000 slots or 100,000). Read the
@@ -375,7 +377,7 @@ const collected: Record<string, unknown>[] = [];
  * 2.6 KB is the overlay walk, the commit merge, the two synchronous accessors the
  * revm store and `dumpState` read through, and the error text for the retired
  * flat `storageStack`. It has to be in the CORE graph for the same reason the
- * previous re-pin did: this IS the default state manager for `stateMode:'none'`,
+ * previous re-pin did: this IS the default node's state manager,
  * which is every consumer who passes no options — and the growth buys that same
  * consumer that flatness. Still zero bytes of `revm-wasm`.
  *
@@ -385,7 +387,7 @@ const collected: Record<string, unknown>[] = [];
  * no-op, so a contract created at an address that already held storage no longer
  * inherits it. 0.2 KB, and it is a loop over the storage map plus its comment. It
  * has to be in the CORE graph because it is the default state manager for
- * `stateMode:'none'`, which is every consumer who passes no options. Still zero
+ * the default node, which is every consumer who passes no options. Still zero
  * bytes of `revm-wasm`.
  *
  * `engine-seam-docs-and-honest-edges`: 412.4 -> 413.5 KB

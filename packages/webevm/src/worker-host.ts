@@ -92,7 +92,7 @@ export interface WorkerHostOptions {
  * (which a bare `SlimNode` annotation would let through, since it demands only
  * the required members). `SlimNode` has no optional members today, so this costs
  * nothing now and stops the one thing the guarantee otherwise missed. The plain
- * values (`stateMode`, `senderMode`, `engine`) clone across as-is; the client
+ * values (`computeStateRoot`, `senderMode`, `engine`) clone across as-is; the client
  * reads them off the remote as promises.
  */
 function nodeProxy(node: SlimNode): SlimNode {
@@ -102,7 +102,7 @@ function nodeProxy(node: SlimNode): SlimNode {
 		dumpState: () => node.dumpState(),
 		loadState: (state) => node.loadState(state),
 		getStateRoot: () => node.getStateRoot(),
-		stateMode: node.stateMode,
+		computeStateRoot: node.computeStateRoot,
 		senderMode: node.senderMode,
 		engine: node.engine,
 		// newHeads over comlink: the callback arrives as a comlink proxy, and the

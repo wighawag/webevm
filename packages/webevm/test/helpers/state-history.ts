@@ -33,7 +33,7 @@
  * (`test/state-history-expected.ts`).
  */
 import {changeSetsForTests, createNode} from '../../src/node.js';
-import type {NodeOptions, SlimNode, StateMode} from '../../src/types.js';
+import type {NodeOptions, SlimNode} from '../../src/types.js';
 import {privateKeyToAccount} from 'viem/accounts';
 import type {EngineFactory} from './conformance.js';
 import {chainNodeOptions, runChangeSetChain, word} from './change-set.js';
@@ -122,8 +122,12 @@ function diff(
  * two nodes created either side of a second boundary hash every block
  * differently while holding identical state. Comparing the whole dump made the
  * determinism check flaky under load (both runs straddling a tick).
+ *
+ * Exported for ./state-history-transports.ts, whose worker-versus-reference
+ * `sameState` check compared whole dumps and flaked on exactly that tick
+ * (about one run in four, 2026-09-28).
  */
-function stateOfDump(dump: Awaited<ReturnType<SlimNode['dumpState']>>) {
+export function stateOfDump(dump: Awaited<ReturnType<SlimNode['dumpState']>>) {
 	return JSON.stringify({
 		accounts: dump.accounts,
 		code: dump.code,
@@ -137,11 +141,11 @@ function stateOfDump(dump: Awaited<ReturnType<SlimNode['dumpState']>>) {
 
 async function runDifferential(
 	makeEngine: EngineFactory | undefined,
-	stateMode: StateMode,
+	computeStateRoot: boolean,
 ) {
 	const opts = (): Promise<NodeOptions> =>
 		chainNodeOptions(makeEngine, {
-			stateMode,
+			computeStateRoot,
 			stateHistory: {blocks: WIDE_WINDOW},
 		});
 
@@ -265,11 +269,11 @@ async function runDifferential(
  */
 async function runCheatVisibility(
 	makeEngine: EngineFactory | undefined,
-	stateMode: StateMode,
+	computeStateRoot: boolean,
 ) {
 	const X = '0x000000000000000000000000000000000000c0de';
 	const node = await createNode({
-		stateMode,
+		computeStateRoot,
 		chainId: CHAIN_ID,
 		miningConfig: {type: 'auto'},
 		engine: makeEngine ? await makeEngine() : undefined,
@@ -309,12 +313,12 @@ async function runCheatVisibility(
  */
 async function runWindow(
 	makeEngine: EngineFactory | undefined,
-	stateMode: StateMode,
+	computeStateRoot: boolean,
 ) {
 	const N = 3;
 	const X = '0x000000000000000000000000000000000000beef';
 	const node = await createNode({
-		stateMode,
+		computeStateRoot,
 		chainId: CHAIN_ID,
 		miningConfig: {type: 'auto'},
 		engine: makeEngine ? await makeEngine() : undefined,
@@ -405,12 +409,12 @@ async function runWindow(
  */
 async function runMidBlockThrow(
 	makeEngine: EngineFactory | undefined,
-	stateMode: StateMode,
+	computeStateRoot: boolean,
 ) {
 	const signer = privateKeyToAccount(PK);
 	const TO = '0x000000000000000000000000000000000000d00d';
 	const node = await createNode({
-		stateMode,
+		computeStateRoot,
 		chainId: CHAIN_ID,
 		miningConfig: {type: 'manual'},
 		initialBalances: {[signer.address]: 10n ** 24n},
@@ -469,10 +473,10 @@ async function runMidBlockThrow(
 /** Without the option the node seals nothing and still refuses below the head. */
 async function runWithoutHistory(
 	makeEngine: EngineFactory | undefined,
-	stateMode: StateMode,
+	computeStateRoot: boolean,
 ) {
 	const node = await createNode({
-		stateMode,
+		computeStateRoot,
 		chainId: CHAIN_ID,
 		engine: makeEngine ? await makeEngine() : undefined,
 	});
@@ -492,18 +496,18 @@ async function runWithoutHistory(
 }
 
 /**
- * The battery. `stateMode` defaults to `'none'`; `'trie'` runs the same
+ * The battery. `computeStateRoot` defaults to `false`; `true` runs the same
  * assertions on a node that also derives a trie (history composes with it,
  * `trie-derived-from-the-flat-state`), where the only expected difference is
  * that a node WITHOUT history still records change sets (the trie consumes
  * them) while sealing none.
  */
 export async function runStateHistoryChecks(
-	params: {makeEngine?: EngineFactory; stateMode?: StateMode} = {},
+	params: {makeEngine?: EngineFactory; computeStateRoot?: boolean} = {},
 ) {
-	const mode = params.stateMode ?? 'none';
+	const mode = params.computeStateRoot === true;
 	return {
-		stateMode: mode,
+		computeStateRoot: mode,
 		differential: await runDifferential(params.makeEngine, mode),
 		cheats: await runCheatVisibility(params.makeEngine, mode),
 		window: await runWindow(params.makeEngine, mode),
@@ -517,7 +521,8 @@ export async function runStateHistoryChecks(
 /**
  * `stateHistory` is validated at construction: absent is off, `{blocks: N}` with
  * N a positive safe integer is on, anything else throws. Combining it with
- * `stateMode:'trie'` is ACCEPTED (it was refused while trie mode ran on
+ * `computeStateRoot: true` is ACCEPTED (it was refused while trie mode, as a
+ * root-computing node was then called, ran on
  * `MerkleStateManager`). No engine is involved, so this runs once.
  */
 export async function runStateHistoryConstructionChecks() {
@@ -546,8 +551,8 @@ export async function runStateHistoryConstructionChecks() {
 		refusals[name] = await attempt({stateHistory: value});
 	return {
 		refusals,
-		trie: await attempt({stateMode: 'trie', stateHistory: {blocks: 4}}),
-		trieWithout: await attempt({stateMode: 'trie'}),
+		trie: await attempt({computeStateRoot: true, stateHistory: {blocks: 4}}),
+		trieWithout: await attempt({computeStateRoot: true}),
 		one: await attempt({stateHistory: {blocks: 1}}),
 		absent: await attempt({}),
 	};

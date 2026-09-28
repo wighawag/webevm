@@ -1,7 +1,7 @@
 /**
  * revm-storage-keys.spec.ts: THE TWO ROUTES INTO ONE SLOT AGREE ABOUT THE KEY.
  *
- * The node's `stateMode:'none'` storage key is PACKED — two bytes per UTF-16 code
+ * The node's storage key is PACKED: two bytes per UTF-16 code
  * unit, built by `src/storage-keys.ts` — because 83-84% of a cold revm storage
  * access was JS-side hex key building and this recovers HALF of the access
  * (`docs/spikes/revm-state-store-packed-storage-keys/measurements.md`). Owning

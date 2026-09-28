@@ -47,7 +47,7 @@
  *      answer.
  *   6. Both wasm delivery shapes work: a bundler-resolved asset and a
  *      runtime-fetched URL, through the same code path.
- *   7. `stateMode:'trie'` is SERVED: every node runs on the flat state and the
+ *   7. `computeStateRoot: true` is SERVED: every node runs on the flat state and the
  *      trie is derived from it between blocks, so revm computes the block and the
  *      node reports a real root (ADR 0014; it used to be refused here).
  *   7b. An engine asked for a READ before a node bound it refuses, rather than
@@ -866,7 +866,6 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 				stateManager,
 				common: seamCommon,
 				getBlockHash: () => undefined,
-				stateMode: 'none',
 			});
 		}
 		const r = await engine.call({
@@ -1110,14 +1109,14 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	);
 	await urlNode.node.dispose();
 
-	// ---------- trie mode is SERVED (it used to be refused) ----------
+	// ---------- computeStateRoot is SERVED (it used to be refused) ----------
 	// The trie is derived from the flat state after the block, so the engine
 	// never reads it: revm executes, and the block header carries a real root
 	// that `getStateRoot()` agrees with.
 	{
 		const trieNode = await createNode({
 			chainId: CHAIN_ID,
-			stateMode: 'trie',
+			computeStateRoot: true,
 			miningConfig: {type: 'auto'},
 			initialBalances: {[account.address]: 10n ** 24n},
 			engine: await createRevmEngine({wasm: bundlerResolvedWasm}),
@@ -1143,7 +1142,7 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 		})) as {stateRoot: string};
 		out.trieServed = {
 			engineId: trieNode.engine.id,
-			stateMode: trieNode.stateMode,
+			computeStateRoot: trieNode.computeStateRoot,
 			status: rcpt.status,
 			genesisRoot,
 			headerRoot: block.stateRoot,
@@ -1198,7 +1197,6 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 				stateManager: new OverlayStorageStateManager(),
 				common: commonOn(hardfork),
 				getBlockHash: () => undefined,
-				stateMode: 'none',
 			});
 			return 'DID_NOT_THROW';
 		} catch (e) {
@@ -1681,7 +1679,6 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 			stateManager: new OverlayStorageStateManager(),
 			common,
 			getBlockHash: () => undefined,
-			stateMode: 'none',
 		});
 		const estimates: Record<string, string> = {};
 		for (const [label, engine] of [

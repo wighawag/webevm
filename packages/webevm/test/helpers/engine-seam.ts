@@ -162,7 +162,7 @@ export async function runEngineSeamChecks() {
 
 	// ---------- 2) an INJECTED engine ----------
 	const seen: {to?: string; data: string; gasLimit: string}[] = [];
-	let connectedStateMode: string | undefined;
+	let connectedContextKeys: string | undefined;
 	let connectedStateManagerUsable = false;
 	let connectCount = 0;
 
@@ -171,7 +171,7 @@ export async function runEngineSeamChecks() {
 		id: 'test-stub',
 		connect(ctx) {
 			connectCount++;
-			connectedStateMode = ctx.stateMode;
+			connectedContextKeys = Object.keys(ctx).sort().join(',');
 			connectedStateManagerUsable =
 				typeof ctx.stateManager?.getAccount === 'function';
 		},
@@ -211,7 +211,7 @@ export async function runEngineSeamChecks() {
 	});
 	out.stubEngineId = stubNode.engine.id;
 	out.stubConnectCount = connectCount;
-	out.stubConnectedStateMode = connectedStateMode;
+	out.stubConnectedContextKeys = connectedContextKeys;
 	out.stubConnectedStateManagerUsable = connectedStateManagerUsable;
 
 	// eth_call -> the engine's return data, verbatim.
