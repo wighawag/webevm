@@ -96,6 +96,9 @@
  *                      (helpers/historical-call.ts): eth_call / eth_estimateGas
  *                      at a past block in the window execute against that
  *                      block's state and environment, with revm executing
+ *   - 'state-history-persistence': the SHARED state-history-persistence battery
+ *                      (helpers/state-history-persistence.ts): the undo log
+ *                      survives dumpState / loadState, with revm executing
  */
 import type {
 	CodeUnderTest,
@@ -118,6 +121,7 @@ import {runRevmRpcParams} from './revm-rpc-params.js';
 import {runRevmChangeSet} from './revm-change-set.js';
 import {runRevmStateHistory} from './revm-state-history.js';
 import {runRevmHistoricalCall} from './revm-historical-call.js';
+import {runRevmStateHistoryPersistence} from './revm-state-history-persistence.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {
 	runRevmPersistWrite,
@@ -341,6 +345,17 @@ const cut: CodeUnderTest = {
 			return {results, timings, errors, env: captureEnv()};
 		}
 
+		// The SHARED state-history-persistence battery, with revm installed.
+		if (ctx.params.mode === 'state-history-persistence') {
+			try {
+				results.revmStateHistoryPersistence =
+					await runRevmStateHistoryPersistence();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
 		if (ctx.params.mode === 'concurrency') {
 			try {
 				results.revmConcurrency = await runRevmConcurrency();
@@ -372,7 +387,10 @@ const cut: CodeUnderTest = {
 				if (ctx.phase === 'write') {
 					results.write = await runRevmPersistWrite();
 				} else {
-					results.read = await runRevmPersistRead(String(ctx.params.address));
+					results.read = await runRevmPersistRead(String(ctx.params.address), {
+						pinned: Number(ctx.params.pinned),
+						beforeTransfer: Number(ctx.params.beforeTransfer),
+					});
 				}
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));

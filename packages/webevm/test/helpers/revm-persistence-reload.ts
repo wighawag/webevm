@@ -39,6 +39,9 @@ export async function runRevmPersistWrite() {
 	return persistWrite(await options());
 }
 
-export async function runRevmPersistRead(address: string) {
-	return persistRead(address, await options());
+export async function runRevmPersistRead(
+	address: string,
+	pinnedAt: {pinned: number; beforeTransfer: number},
+) {
+	return persistRead(address, await options(), pinnedAt);
 }

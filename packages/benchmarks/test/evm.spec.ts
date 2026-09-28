@@ -90,7 +90,18 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED SEVENTEEN TIMES SINCE. Most recent first:
+ * RE-PINNED EIGHTEEN TIMES SINCE. Most recent first:
+ *
+ * 439.9 -> 441.4 KB raw / 132.5 -> 133.0 KB gzip, by `state-history-persistence`:
+ * the `stateHistory` undo log survives `dumpState` / `loadState` (and so an
+ * IndexedDB reload) as the optional `history` field of the dump. The 1.5 KB is
+ * in `src/node.ts`: `serializeChangeSet` / `deserializeChangeSet` (a change set
+ * to and from the dump's hex form), `mergeSerializedOlderWins` and
+ * `dumpHistory` (the open record folded into the head's record), and
+ * `loadHistory` (the contiguous run ending at the head, truncated to the
+ * loading node's window). In the CORE graph because `dumpState` / `loadState`
+ * are; a node without `stateHistory` writes and reads no history. Still zero
+ * bytes of `revm-wasm`.
  *
  * 439.2 -> 439.9 KB raw / 132.3 -> 132.5 KB gzip, by `historical-eth-call`:
  * with `stateHistory`, `eth_call` and `eth_estimateGas` at a block K in the
@@ -387,7 +398,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 439.9, gzipKB: 132.5};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 441.4, gzipKB: 133.0};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

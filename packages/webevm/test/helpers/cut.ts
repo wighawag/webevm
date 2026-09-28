@@ -42,6 +42,10 @@
  *                            and block environment (consumer shape, BLOCKHASH,
  *                            reconstruction, overrides on top, purity, and an
  *                            execution differential). ENGINE-PARAMETERISED
+ *   - 'state-history-persistence': the undo log survives dumpState /
+ *                            loadState (same answers at every K after a load,
+ *                            old dumps, a changed window, a node without the
+ *                            option). ENGINE-PARAMETERISED
  *   - 'rpc-params'         : parameters that used to be IGNORED are honoured or
  *                            refused: eth_call/eth_estimateGas state overrides
  *                            (in 'none' AND 'trie' mode), eth_getLogs blockHash,
@@ -107,6 +111,7 @@ import {
 	runStateHistoryConstructionChecks,
 } from './state-history.js';
 import {runHistoricalCallChecks} from './historical-call.js';
+import {runStateHistoryPersistenceChecks} from './state-history-persistence.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -255,6 +260,17 @@ const cut: CodeUnderTest = {
 			return {results, timings, errors, env: captureEnv()};
 		}
 
+		// state-history-persistence: the undo log survives dumpState / loadState.
+		if (ctx.params.mode === 'state-history-persistence') {
+			try {
+				results.stateHistoryPersistence =
+					await runStateHistoryPersistenceChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
 		// concurrency: the node serialises its whole public surface, so two requests
 		// in flight cannot pop each other's checkpoint levels off the ONE state
 		// manager they share. Deterministic tick-offset scans, one fresh node per
@@ -290,7 +306,14 @@ const cut: CodeUnderTest = {
 				if (ctx.phase === 'write') {
 					results.write = await persistWrite();
 				} else {
-					results.read = await persistRead(String(ctx.params.address));
+					results.read = await persistRead(
+						String(ctx.params.address),
+						{},
+						{
+							pinned: Number(ctx.params.pinned),
+							beforeTransfer: Number(ctx.params.beforeTransfer),
+						},
+					);
 				}
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));

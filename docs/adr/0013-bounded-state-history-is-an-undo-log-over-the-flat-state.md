@@ -13,5 +13,5 @@ The option is opt-in with no default window (absent means off, and a node withou
 ## Consequences
 
 - Memory is bounded by N blocks times the keys each changed. A storage CLEAR (creation over storage, `SELFDESTRUCT`, EIP-161 removal) records every slot the account held, so it costs O(that account's slots) once.
-- A dump loaded with `loadState` is a baseline, not history: the log starts again at the loaded head until `state-history-persistence` carries the log in the dump.
+- The log is persisted: `dumpState` carries it as the optional `history` field (still `version: 1`), with the open record folded into the head's record, and `loadState` restores the contiguous run ending at the loaded head, truncated to the loading node's N (task `state-history-persistence`; the rationale is at `dumpHistory` / `loadHistory` in `src/node.ts`). A dump without the field (older, or from a node without the option) is a baseline, not history: the log starts again at the loaded head.
 - A block mined under the number of the block it replaces (a fixed `blockEnv.number`) is merged into that block's record, the older value winning, so the log stays bounded.

@@ -102,6 +102,7 @@ import {
 	type SerializedReceipt,
 	type SerializedLog,
 	type SerializedTx,
+	type SerializedHistoryBlock,
 } from './types.js';
 
 const ZERO_HASH = '0x' + '00'.repeat(32);
@@ -193,6 +194,96 @@ function hex(b: Uint8Array): string {
 }
 function numHex(n: number | bigint): string {
 	return bigIntToHex(BigInt(n));
+}
+
+/**
+ * A change set as the dump carries it ({@link SerializedHistoryBlock}): keys in
+ * `0x` hex, values hex, `null` for absent. Reads `changes` and does not keep a
+ * reference to anything in it.
+ */
+function serializeChangeSet(
+	number: number,
+	changes: ChangeSet,
+): SerializedHistoryBlock {
+	const accounts: Record<string, string | null> = {};
+	for (const [key, account] of changes.accounts)
+		accounts[key] = account === undefined ? null : hex(account.serialize());
+	const code: Record<string, string | null> = {};
+	for (const [key, value] of changes.code)
+		code[key] = value === undefined ? null : hex(value);
+	const storage: Record<string, Record<string, string | null>> = {};
+	for (const [addressKey, slots] of changes.storage) {
+		const out: Record<string, string | null> = {};
+		for (const [slotKey, value] of slots)
+			out[unpackSlotKey(slotKey)] = value === undefined ? null : hex(value);
+		storage[unpackAddressKey(addressKey)] = out;
+	}
+	return {
+		number,
+		accounts,
+		code,
+		storage,
+		storageCleared: [...changes.storageCleared].map(unpackAddressKey),
+	};
+}
+
+/**
+ * Merge serialized record `newer` INTO `older`, the OLDER entry winning for a
+ * key both name: the serialized twin of `mergeChangeSetOlderWins`, used by
+ * `dumpState` to fold the open record into the head's record (see there).
+ */
+function mergeSerializedOlderWins(
+	older: SerializedHistoryBlock,
+	newer: SerializedHistoryBlock,
+): void {
+	for (const [key, value] of Object.entries(newer.accounts))
+		if (!(key in older.accounts)) older.accounts[key] = value;
+	for (const [key, value] of Object.entries(newer.code))
+		if (!(key in older.code)) older.code[key] = value;
+	for (const [address, slots] of Object.entries(newer.storage)) {
+		const target = (older.storage[address] ??= {});
+		for (const [slot, value] of Object.entries(slots))
+			if (!(slot in target)) target[slot] = value;
+	}
+	for (const address of newer.storageCleared)
+		if (!older.storageCleared.includes(address))
+			older.storageCleared.push(address);
+}
+
+/**
+ * The inverse of {@link serializeChangeSet}: keys back to the representation's
+ * own (`address.toString()` for accounts and code, PACKED for storage), `null`
+ * back to `undefined`. Addresses are lowercased, so a hand-edited checksummed
+ * key still names the account the maps hold.
+ */
+function deserializeChangeSet(record: SerializedHistoryBlock): ChangeSet {
+	const accounts = new Map<string, Account | undefined>();
+	for (const [key, value] of Object.entries(record.accounts))
+		accounts.set(
+			key.toLowerCase(),
+			value === null ? undefined : createAccountFromRLP(hexToBytes(value)),
+		);
+	const code = new Map<string, Uint8Array | undefined>();
+	for (const [key, value] of Object.entries(record.code))
+		code.set(key.toLowerCase(), value === null ? undefined : hexToBytes(value));
+	const storage: ChangeSet['storage'] = new Map();
+	for (const [address, slots] of Object.entries(record.storage)) {
+		const out = new Map<string, Uint8Array | undefined>();
+		for (const [slot, value] of Object.entries(slots))
+			out.set(
+				packSlotKey(hexToBytes(slot)),
+				value === null ? undefined : hexToBytes(value),
+			);
+		storage.set(packAddressKey(hexToBytes(address)), out);
+	}
+	return {
+		accounts,
+		code,
+		storage,
+		storageCleared: new Set(
+			record.storageCleared.map((a) => packAddressKey(hexToBytes(a))),
+		),
+	};
 }
 function txHashOf(tx: TypedTransaction): string {
 	return hex(tx.hash());
@@ -2926,7 +3017,78 @@ export async function createNodeWithInternals(
 			blocks,
 			receipts: Object.fromEntries(receipts),
 			transactions: Object.fromEntries(transactions),
+			// ADDITIVE: a node without `stateHistory` writes no field at all, so its
+			// dump is exactly what it was before history existed.
+			...(stateHistoryBlocks === undefined ? {} : {history: dumpHistory()}),
 		};
+	}
+
+	/**
+	 * THE UNDO LOG AS THE DUMP CARRIES IT: one serialized record per sealed block,
+	 * oldest first, with the OPEN record FOLDED INTO THE HEAD'S RECORD (older
+	 * entry winning).
+	 *
+	 * WHY FOLD rather than dump the open record as a field of its own: `loadState`
+	 * treats the loaded state as a baseline and CLEARS the open record, so the
+	 * writes since the head was mined (`evm_set*` cheats, a batch that threw
+	 * mid-block) become part of the loaded head, which reads them live exactly as
+	 * it did before the dump. What must not be lost is their prior values, which
+	 * every read BELOW the head consults after the sealed records. Folding keeps
+	 * the per-key earliest-wins union over `undo[K+1] .. undo[head]` + open
+	 * identical for every K below the head: a key the head's record already names
+	 * keeps that (older) value; a key it does not name did not change in the head
+	 * block, so its value at the end of the block before equals its value at the
+	 * end of the head, which is what the open record holds. The alternative, a
+	 * separate `open` field restored as the open record, would make the next mined
+	 * block after a reload own writes made before it, and would have been a second
+	 * new field for the same answers.
+	 *
+	 * With NO record for the head (the head is where history starts: genesis, or a
+	 * loaded head nothing was mined on), no block below the head is servable, and
+	 * the open record is dropped with nothing lost.
+	 *
+	 * Decisions around the format (this fold, the contiguous restore, `[]` vs no
+	 * key) are recorded in
+	 * `work/notes/observations/state-history-persistence-decisions.md`.
+	 */
+	function dumpHistory(): SerializedHistoryBlock[] {
+		const out = sealed.map((r) => serializeChangeSet(r.number, r.changes));
+		const open = changeSets?.peekChangeSet();
+		const head = out[out.length - 1];
+		if (
+			open !== undefined &&
+			head !== undefined &&
+			head.number === latestNumber
+		)
+			mergeSerializedOlderWins(head, serializeChangeSet(latestNumber, open));
+		return out;
+	}
+
+	/**
+	 * RESTORE the undo log from a dump's `history` (see {@link dumpHistory}), after
+	 * the rest of the state is loaded and {@link latestNumber} is the dump's head.
+	 * Only the CONTIGUOUS run of records ending at the head block is kept, newest
+	 * first, stopping at the first gap and at this node's window (a record at or
+	 * below `head - N` serves no block in it, so a dump with more history than N
+	 * is truncated to N, and one with less serves what it has). A dump the writer
+	 * produced has no gap; a hand-edited or foreign one might, and a read below a
+	 * gap would silently be answered from a later state, which is the one thing
+	 * the history exists not to do. {@link historyFloor} becomes the block before
+	 * the oldest record kept, or the head when none is.
+	 */
+	function loadHistory(history: SerializedHistoryBlock[], window: number) {
+		const kept: {number: number; changes: ChangeSet}[] = [];
+		let expected = latestNumber;
+		for (let i = history.length - 1; i >= 0; i--) {
+			const record = history[i];
+			if (record.number !== expected || record.number <= latestNumber - window)
+				break;
+			kept.push({number: record.number, changes: deserializeChangeSet(record)});
+			expected--;
+		}
+		kept.reverse();
+		sealed.push(...kept);
+		historyFloor = kept.length > 0 ? kept[0].number - 1 : latestNumber;
 	}
 
 	async function loadState(state: SerializedState): Promise<void> {
@@ -3020,10 +3182,15 @@ export async function createNodeWithInternals(
 		// head, so there is none to report for it either.
 		changeSets?.takeChangeSet();
 		headBlockChangeSet = undefined;
-		// ...and so is its history: the undo log described the state this load just
-		// replaced, so history starts again at the loaded head.
+		// ...and the history the node held described the state this load just
+		// replaced, so it goes. What replaces it is the dump's own history, when the
+		// dump carries one and this node keeps any: otherwise history starts again at
+		// the loaded head (an older dump, or a node without `stateHistory`, which
+		// ignores the field).
 		sealed.length = 0;
 		historyFloor = latestNumber;
+		if (stateHistoryBlocks !== undefined && state.history !== undefined)
+			loadHistory(state.history, stateHistoryBlocks);
 	}
 
 	// ---------- persistence auto-load on creation ----------

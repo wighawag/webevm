@@ -78,7 +78,7 @@ const chain = {
  * `EXTCODEHASH` is what tells an ABSENT account (zero) from an existing empty one.
  * Placed by a state override at an address nothing else touches.
  */
-const READER = '0x0000000000000000000000000000000000005eed';
+export const READER = '0x0000000000000000000000000000000000005eed';
 const READER_CODE = '0x5f3580315f52803b6020523f60405260605ff3';
 /** SLOT READER: `PUSH0 CALLDATALOAD SLOAD PUSH0 MSTORE PUSH1 20 PUSH0 RETURN`. */
 const SLOT_READER_CODE = '0x5f35545f5260205ff3';
@@ -547,9 +547,10 @@ async function runReconstruction(makeEngine: EngineFactory | undefined) {
 
 /**
  * Every account and every slot the change-set chain touches, read BY EXECUTION
- * at `block`.
+ * at `block`. Exported for ./state-history-persistence.ts, which asks the same
+ * questions of a node before and after a dump / load.
  */
-async function executeAll(
+export async function executeAll(
 	node: SlimNode,
 	addresses: string[],
 	slots: string[],

@@ -34,6 +34,7 @@ export type {
 	PersistenceAdapter,
 	RequestArguments,
 	SerializedState,
+	SerializedHistoryBlock,
 } from './types.js';
 export {RpcError} from './types.js';
 // The revm engine is intentionally NOT re-exported here either, for the same
