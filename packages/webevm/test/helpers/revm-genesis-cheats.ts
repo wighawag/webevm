@@ -8,12 +8,12 @@
  * changes is WHICH EVM reads the genesis state and executes the transaction that
  * calls the pre-deployed contract.
  *
- * WHICH STATE MODE, and why the perf half is absent. The engine serves
- * `stateMode:'none'` and REFUSES `'trie'` at construction (ADR 0005), so the cheats
- * run in `'none'` here and `'trie'` keeps its default-engine coverage in
- * `genesis-cheats-perf.spec.ts`. The trie-vs-none PERF comparison is a comparison
- * between the two state modes, so it cannot run on an engine that serves one of
- * them; engine performance belongs to `packages/benchmarks`.
+ * WHICH STATE MODE, and why the perf half is absent. The cheats run in `'none'`
+ * here and `'trie'` keeps its default-engine coverage in
+ * `genesis-cheats-perf.spec.ts` (revm, which used to refuse `'trie'`, serves it
+ * since ADR 0014, and that is covered by `revm-trie-derived.spec.ts`). The
+ * trie-vs-none PERF comparison is not repeated per engine: engine performance
+ * belongs to `packages/benchmarks`.
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them: the checks build three nodes
  * (the runtime-code capture, the genesis node, the cheat node), and an engine

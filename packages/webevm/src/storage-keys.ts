@@ -1,5 +1,5 @@
 /**
- * storage-keys.ts — the node's `stateMode:'none'` STORAGE KEY encoding, and the
+ * storage-keys.ts: the node's STORAGE KEY encoding (every state mode), and the
  * ONE place either side of it is allowed to build a key.
  *
  * A storage key here is **PACKED**: two bytes per UTF-16 code unit, so an
@@ -133,6 +133,25 @@ export function unpackAddressKey(key: PackedAddressKey): HexKey {
 /** `0x` + 64 hex digits, i.e. exactly what `bytesToHex(slot32)` would give. */
 export function unpackSlotKey(key: PackedSlotKey): HexKey {
 	return unpack(key);
+}
+
+/**
+ * The RAW BYTES a packed key encodes (20 for an account, 32 for a slot): the
+ * inverse of {@link packAddressKey} / {@link packSlotKey} without the hex
+ * detour. For the derived trie (`src/derived-trie.ts`), which keys its tries by
+ * the raw address and slot and reaches them from the change set's packed keys.
+ * Allocates, so it is a per-changed-key cost, never a read path.
+ */
+export function packedKeyBytes(
+	key: PackedAddressKey | PackedSlotKey,
+): Uint8Array {
+	const out = new Uint8Array(key.length * 2);
+	for (let i = 0; i < key.length; i++) {
+		const c = key.charCodeAt(i);
+		out[2 * i] = c >>> 8;
+		out[2 * i + 1] = c & 0xff;
+	}
+	return out;
 }
 
 /**

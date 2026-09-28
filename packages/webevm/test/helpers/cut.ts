@@ -60,6 +60,13 @@
  *                            same suite runs on revm through ./cut-revm.ts
  *   - 'conformance'        : differential vs a trie-backed @ethereumjs/vm runTx
  *   - 'statetest'          : real ethereum/tests GeneralStateTests vs trie mode
+ *   - 'trie-derived'       : trie mode derives its trie from the flat state: a
+ *                            dump carries storage and a reload reproduces every
+ *                            root, 'none' creates no trie, history composes.
+ *                            ENGINE-PARAMETERISED (revm through ./cut-revm.ts)
+ *   - 'storage-collision'  : a creation over a storage-only account succeeds and
+ *                            wipes it, nonce collisions are refused, in both
+ *                            state modes. ENGINE-PARAMETERISED
  *   - 'viem-surface'       : a typical viem/wagmi lifecycle + method-gap report
  *   - 'genesis-cheats-perf': custom genesis + evm_set* cheats + trie-vs-none perf.
  *                            ENGINE-PARAMETERISED: the genesis + cheats halves run
@@ -126,6 +133,8 @@ import {
 import {runConformance} from './conformance.js';
 import {viemSurfaceProbe} from './viem-surface.js';
 import {runStateTests} from './statetest.js';
+import {runTrieDerivedChecks} from './trie-derived.js';
+import {runStorageCollisionChecks} from './storage-collision.js';
 import {runGenesisCheatsPerf} from './genesis-cheats-perf.js';
 import {runStateRoundTrip} from './state-roundtrip.js';
 import {persistWrite, persistRead} from './persistence-reload.js';
@@ -355,6 +364,27 @@ const cut: CodeUnderTest = {
 			try {
 				const fixtures = ctx.params.fixtures as {name: string; json: any}[];
 				results.stateTests = await runStateTests(fixtures);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// trie-derived: the trie is DERIVED from the flat state (dump and reload,
+		// no trie in 'none' mode, history in trie mode).
+		if (ctx.params.mode === 'trie-derived') {
+			try {
+				results.trieDerived = await runTrieDerivedChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// storage-collision: creations at occupied addresses, in both state modes.
+		if (ctx.params.mode === 'storage-collision') {
+			try {
+				results.storageCollision = await runStorageCollisionChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

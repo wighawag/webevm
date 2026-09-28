@@ -99,6 +99,12 @@
  *   - 'state-history-persistence': the SHARED state-history-persistence battery
  *                      (helpers/state-history-persistence.ts): the undo log
  *                      survives dumpState / loadState, with revm executing
+ *   - 'trie-derived': the SHARED derived-trie battery (helpers/trie-derived.ts),
+ *                      with revm executing in stateMode:'trie'
+ *   - 'storage-collision': the SHARED creation-collision cases
+ *                      (helpers/storage-collision.ts), in both state modes
+ *   - 'statetest'   : the GeneralStateTests post-state roots (helpers/statetest.ts)
+ *                      in stateMode:'trie' with revm executing every case
  */
 import type {
 	CodeUnderTest,
@@ -123,6 +129,11 @@ import {runRevmStateHistory} from './revm-state-history.js';
 import {runRevmHistoricalCall} from './revm-historical-call.js';
 import {runRevmStateHistoryPersistence} from './revm-state-history-persistence.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
+import {createRevmEngine} from '../../src/revm.js';
+import {runTrieDerivedChecks} from './trie-derived.js';
+import {runStorageCollisionChecks} from './storage-collision.js';
+import {runStateTests} from './statetest.js';
+import bundlerResolvedWasm from 'revm-wasm/revm.wasm';
 import {
 	runRevmPersistWrite,
 	runRevmPersistRead,
@@ -359,6 +370,34 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'concurrency') {
 			try {
 				results.revmConcurrency = await runRevmConcurrency();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The derived-trie battery, the collision cases and the GeneralStateTests
+		// roots, each with revm executing: trie mode used to be refused by this
+		// engine, so these are the runs that prove it is served.
+		if (
+			ctx.params.mode === 'trie-derived' ||
+			ctx.params.mode === 'storage-collision' ||
+			ctx.params.mode === 'statetest'
+		) {
+			try {
+				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
+				const makeEngine = () => createRevmEngine({wasm});
+				if (ctx.params.mode === 'trie-derived')
+					results.revmTrieDerived = await runTrieDerivedChecks({makeEngine});
+				else if (ctx.params.mode === 'storage-collision')
+					results.revmStorageCollision = await runStorageCollisionChecks({
+						makeEngine,
+					});
+				else
+					results.revmStateTests = await runStateTests(
+						ctx.params.fixtures as {name: string; json: any}[],
+						makeEngine,
+					);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

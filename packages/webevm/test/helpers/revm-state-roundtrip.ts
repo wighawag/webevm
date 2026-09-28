@@ -10,10 +10,9 @@
  * between two transactions is picked up on the next access and a dump taken after
  * one is complete. Both would fail silently if either were untrue.
  *
- * WHICH STATE MODE: the only one this engine serves — it refuses `stateMode:'trie'`
- * at construction (ADR 0005), and the suite runs in the default `'none'`. That
- * refusal is asserted where the mode split is decided (`revm-conformance.spec.ts`),
- * not restated here.
+ * WHICH STATE MODE: the default `'none'`. (This engine used to refuse
+ * `stateMode:'trie'`, ADR 0005; it serves it since ADR 0014, and a trie-mode
+ * dump and reload on revm is covered by `revm-trie-derived.spec.ts`.)
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them: the suite builds an original
  * node and the node it reloads the dump into, and an engine instance binds to

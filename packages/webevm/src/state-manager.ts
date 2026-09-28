@@ -1,5 +1,7 @@
 /**
- * state-manager.ts — the node's `stateMode:'none'` state manager.
+ * state-manager.ts: the node's state manager, in EVERY state mode: a
+ * `stateMode:'trie'` node runs on it too and derives its trie from it
+ * (./derived-trie.ts, ADR 0014).
  *
  * `@ethereumjs/statemanager@10.1.2`'s `SimpleStateManager` keeps storage in ONE
  * FLAT `Map` keyed `` `${address}_${slot}` ``, and `checkpointSync()` pushes a
@@ -98,16 +100,26 @@
  * has to live in code we publish. That argument is even stronger for the layout,
  * which is a representation our own `dumpState` and revm store read directly.
  *
- * WHAT THIS DOES NOT FIX (and cannot, in this mode): the EIP-7610 collision guard
- * sitting just above that call rejects creation outright when the target account
- * has non-empty storage, and it reads `account.storageRoot`. `SimpleStateManager`
- * implements no state-root logic at all, so `storageRoot` never reflects its
- * storage and the guard cannot fire. `stateMode:'trie'` gets the correct,
- * spec-current behaviour from `MerkleStateManager` (creation fails with
- * `CREATE_COLLISION`); `stateMode:'none'` clears and proceeds, which is the
- * pre-EIP-7610 semantics and what the EVM's own call asks for. Both are far
- * better than silently inheriting; they are not identical to each other, and that
- * asymmetry is documented in the README's state-mode section.
+ * WHICH COLLISION RULE EVERY NODE FOLLOWS, and why this class is where it is
+ * decided. `@ethereumjs/evm` also carries an EIP-7610 guard, just above that
+ * call, that refuses a creation when the target has non-empty storage; it reads
+ * `account.storageRoot`, which this class never sets (`SimpleStateManager` has no
+ * trie), so the guard never fires. That is the INTENDED rule, not a gap: a
+ * creation over a zero-nonce, code-less account that holds storage SUCCEEDS and
+ * the storage is WIPED by the `clearStorage` above, which is what the reference
+ * spec specifies (EIP-684 plus the Yellow Paper, execution-specs PR #3508) and
+ * what revm does through this same state. A nonce or code at the target is still
+ * a collision on both engines. Every node follows it, in both state modes,
+ * because every node runs on this class: `stateMode:'trie'` derives its trie from
+ * this state rather than running on `MerkleStateManager` (whose real
+ * `storageRoot` used to make trie mode refuse the creation, EIP-7610, the one
+ * behaviour that differed by mode). Decided with the user 2026-09-28; the
+ * evidence is
+ * `work/notes/findings/storage-only-creation-collisions-are-not-refused-by-the-reference-spec.md`
+ * and the record is
+ * `docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md`.
+ * So a real `storageRoot` must never be written into this class's accounts: it
+ * would silently switch the EIP-7610 guard back on for that account.
  *
  * ## The per-block CHANGE SET (the open record), and why it lives HERE
  *
@@ -288,7 +300,7 @@ export function copyAccount(account: Account): Account {
 
 const STORAGE_STACK_IS_GONE =
 	"webevm: SimpleStateManager's flat `storageStack` is not maintained " +
-	"by this node. `stateMode:'none'` storage is per-account with per-checkpoint " +
+	'by this node. Its storage is per-account with per-checkpoint ' +
 	'OVERLAYS — read it through `storageAt(addressKey, slotKey)` (one slot, ' +
 	'synchronously), `liveStorage()` (every live slot, grouped by account) or the ' +
 	'async `getStorage(address, key)`. This throws on purpose: an empty ' +
@@ -922,14 +934,14 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	 * `dumpState` kept serialising them. Measured through the node's own surface:
 	 * after a contract that writes slot 0 and selfdestructs in the same
 	 * transaction, `eth_getStorageAt` answered `0x2a` in `stateMode:'none'` and
-	 * `0x0` in `stateMode:'trie'`
+	 * `0x0` in `stateMode:'trie'` (which then ran on `MerkleStateManager`)
 	 * (`docs/spikes/revm-write-callbacks-reproduce-the-post-state/measurements.md`).
 	 *
 	 * A DELETED ACCOUNT HAS NO STORAGE, in a trie by construction: the account is
-	 * removed and its storage trie goes with it, which is why
-	 * `MerkleStateManager` needs no equivalent line and why `'trie'` was already
-	 * right. This makes `'none'` say the same thing rather than leaving the two
-	 * modes disagreeing about a destroyed contract, and it is the reason the revm
+	 * removed and its storage trie goes with it. This makes the flat state, which
+	 * every node now runs on, say the same thing (the derived trie of
+	 * `stateMode:'trie'` sees this clear as a storage-cleared change), and it is
+	 * the reason the revm
 	 * engine — whose host is handed `clearStorage` then `removeAccount` for exactly
 	 * these two cases, with revm's commit semantics already applied — now leaves
 	 * post-state a diff cannot tell apart from `@ethereumjs/vm`'s. See

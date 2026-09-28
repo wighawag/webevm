@@ -14,11 +14,13 @@
  * happily and execute against the WRONG genesis — the pre-deployed contract's
  * `number()` would answer 0 rather than 41, with no error at all.
  *
- * WHICH STATE MODE: `'none'`, the only one this engine serves (it refuses `'trie'`
- * at construction — ADR 0005, asserted in `revm-conformance.spec.ts`). `'trie'`
- * keeps its default-engine coverage in `genesis-cheats-perf.spec.ts`, which also
- * keeps the trie-vs-none perf comparison — a comparison between the state modes
- * cannot run on an engine that serves one of them.
+ * WHICH STATE MODE: `'none'`, the default. revm used to REFUSE `'trie'` (ADR
+ * 0005); it serves both modes now that the trie is derived from the flat state
+ * (ADR 0014), and trie mode on revm is covered by `revm-trie-derived.spec.ts`,
+ * `revm-statetest.spec.ts` and `revm-conformance.spec.ts`. `'trie'` keeps its
+ * default-engine coverage here in `genesis-cheats-perf.spec.ts`, which also keeps
+ * the trie-vs-none perf comparison; engine performance belongs to
+ * `packages/benchmarks`.
  *
  * Its OWN cut (helpers/cut-revm.ts), because that bundle carries the revm `.wasm`
  * and the shared cut must keep costing the other specs nothing.
@@ -48,7 +50,7 @@ test('custom genesis + runtime cheats on the revm engine', async ({page}) => {
 
 	expect(r.errors).toEqual([]);
 
-	// Both halves really ran ON REVM, in the one mode it serves — not silently on
+	// Both halves really ran ON REVM, in the mode asked for, and not silently on
 	// the default engine, which `genesis-cheats-perf.spec.ts` already covers.
 	expect(s.servedMode).toBe('none');
 	expect(s.customGenesis.engineId).toBe('revm-wasm');

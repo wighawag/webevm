@@ -90,7 +90,20 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED EIGHTEEN TIMES SINCE. Most recent first:
+ * RE-PINNED NINETEEN TIMES SINCE. Most recent first:
+ *
+ * 441.4 -> 442.3 KB raw / 133.0 -> 133.3 KB gzip, by
+ * `trie-derived-from-the-flat-state`: `stateMode:'trie'` stops running on
+ * `MerkleStateManager` and runs on the same flat state as every node, with a
+ * Merkle-Patricia trie DERIVED from it per block (ADR 0014). The 0.9 KB is the
+ * new `src/derived-trie.ts` (a full build from the flat state, the per-block
+ * apply of a change set's keys, the account/storage trie shapes) importing
+ * `@ethereumjs/mpt` and `@ethereumjs/rlp` directly, net of what left `src/node.ts`
+ * (the `MerkleStateManager` branches, the `touchedAccounts` set and the trie-mode
+ * dump). The trie library itself was already in the graph through
+ * `@ethereumjs/statemanager`. In the CORE graph because `stateMode` is a
+ * `createNode` option; a `'none'` node creates no trie. Still zero bytes of
+ * `revm-wasm`.
  *
  * 439.9 -> 441.4 KB raw / 132.5 -> 133.0 KB gzip, by `state-history-persistence`:
  * the `stateHistory` undo log survives `dumpState` / `loadState` (and so an
@@ -398,7 +411,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 441.4, gzipKB: 133.0};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 442.3, gzipKB: 133.3};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

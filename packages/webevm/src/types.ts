@@ -62,16 +62,20 @@ export interface PersistenceAdapter {
 }
 
 /**
- * State backing mode.
- * - `'none'` (DEFAULT): `SimpleStateManager` — plain Maps, NO trie, NO state root.
- *   The fast path; block `stateRoot`/`receiptsRoot`/`transactionsRoot` are zero
- *   placeholders (you are a local chain; canonical roots aren't needed). This is
- *   the recommended mode and what makes the node ~4× faster than the trie path.
- * - `'trie'`: `MerkleStateManager` — real Merkle-Patricia trie. SLOWER (recomputes
- *   the state root each tx) but produces a REAL `stateRoot`, which (a) lets the
- *   node be conformance-tested against `ethereum/tests` GeneralStateTests (they
- *   verify the post-state root), and (b) gives honest canonical block roots for
- *   consumers that need them. Opt-in: pay for the trie only when you want it.
+ * Whether the node computes a state root. EVERY node runs on the same state (our
+ * `SimpleStateManager` subclass: plain Maps, no trie); the mode only decides
+ * whether a trie is DERIVED from it.
+ * - `'none'` (DEFAULT): no trie, no state root, no trie work. Block
+ *   `stateRoot`/`receiptsRoot`/`transactionsRoot` are zero placeholders (you are
+ *   a local chain; canonical roots aren't needed) and `getStateRoot()` throws.
+ * - `'trie'`: additionally keeps a Merkle-Patricia trie derived from the state,
+ *   updated at the end of each block from the keys the block changed, and reports
+ *   its REAL root in each block header and from `getStateRoot()`. That (a) lets
+ *   the node be conformance-tested against `ethereum/tests` GeneralStateTests
+ *   (they verify the post-state root), and (b) gives honest canonical block roots
+ *   for consumers that need them. Execution never reads the trie, so it works on
+ *   every engine (revm included) and behaves exactly as `'none'` in every other
+ *   respect. See `docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md`.
  */
 export type StateMode = 'none' | 'trie';
 
@@ -479,8 +483,9 @@ export interface EngineInfo {
 export interface NodeOptions {
 	/** EIP-155 chain id. Default 31337 (anvil/hardhat-style local). */
 	chainId?: number;
-	/** State backing: `'none'` (fast, no trie/root — default) or `'trie'` (real
-	 *  state root, slower; unlocks GeneralStateTests conformance). */
+	/** `'none'` (no state root, default) or `'trie'` (also derive a trie from
+	 *  the state and report its real root; unlocks GeneralStateTests
+	 *  conformance). See {@link StateMode}. */
 	stateMode?: StateMode;
 	/**
 	 * Sender derivation: `'recover'` (ecrecover, authenticated — DEFAULT) or
@@ -568,7 +573,7 @@ export interface NodeOptions {
 	 * ABSENT MEANS OFF, and there is no default window: a node without it behaves
 	 * exactly as before (the head is served, anything below it refused) and pays
 	 * nothing. `N` must be a positive safe integer; anything else throws at
-	 * construction, as does combining it with `stateMode:'trie'`.
+	 * construction. It composes with `stateMode:'trie'`.
 	 *
 	 * THE COST is memory per changed key per retained block: the node keeps, for
 	 * each of the last N blocks, the value every account, code entry and storage
@@ -620,8 +625,9 @@ export interface SlimNode {
 	onNewHead(cb: (head: {number: number; hash: string}) => void): () => void;
 	/**
 	 * Current canonical state root. In `'trie'` mode this is the REAL
-	 * Merkle-Patricia root (usable for GeneralStateTests conformance); in `'none'`
-	 * mode the trie is absent so this throws (honest — there is no root to give).
+	 * Merkle-Patricia root of the current state, `evm_set*` cheats since the last
+	 * block included (usable for GeneralStateTests conformance); in `'none'` mode
+	 * there is no trie so this throws (honest: there is no root to give).
 	 */
 	getStateRoot(): Promise<string>;
 	/** The state mode this node was created with. */
@@ -690,7 +696,8 @@ export interface SerializedState {
 	chainId: number;
 	/** State mode the dump was produced in (informational). */
 	stateMode?: 'none' | 'trie';
-	/** SimpleStateManager Maps: address -> hex-encoded account/code/storage. */
+	/** The node's state, in every mode: address -> hex-encoded account/code/storage.
+	 *  A `'trie'` node's trie is not serialised; `loadState` rebuilds it. */
 	accounts: Record<string, string>; // addr -> rlp/hex account
 	code: Record<string, string>; // addr -> code hex
 	storage: Record<string, Record<string, string>>; // addr -> (slot hex -> value hex)

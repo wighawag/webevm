@@ -92,7 +92,9 @@ export function assertStateHistory(c: Record<string, any>, label: string) {
 
 	// ---- WITHOUT THE OPTION: nothing sealed, below the head refused ----
 	const o = c.withoutHistory;
-	expect(o.recording, label).toBe(false);
+	// Recording is off without the option, EXCEPT in trie mode, where the derived
+	// trie consumes the change sets; either way nothing is sealed.
+	expect(o.recording, label).toBe(c.stateMode === 'trie');
 	expect(o.sealed, label).toEqual([]);
 	expectRefusedBeyond(o.belowHead, 2, 'without history', label);
 }

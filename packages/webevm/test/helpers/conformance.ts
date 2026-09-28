@@ -2307,49 +2307,29 @@ export async function runConformance(): Promise<{
 }
 
 export interface EngineConformanceReport {
-	/** The battery, run in the one mode this engine serves. */
-	served: BatteryReport;
-	/**
-	 * The modes this engine REFUSES, with the error it refused with. Recorded
-	 * rather than assumed: it is the refusal that decides which mode keeps its
-	 * default-engine coverage, so a mode that silently stopped being refused
-	 * (and therefore silently stopped being covered by anyone) is visible here.
-	 */
-	refusals: {stateMode: StateMode; error: string}[];
+	/** The battery, once per state mode, every one of them on the injected engine. */
+	byMode: Record<StateMode, BatteryReport>;
 	totalMismatches: number;
 }
 
 /**
- * Run the SAME battery with an injected engine, in the one state mode that engine
- * serves, and record its refusal of the others.
+ * Run the SAME battery with an injected engine, in EVERY state mode.
  *
- * Deliberately NOT "run every mode on every engine": an engine that cannot serve
- * a mode must say so at construction, and covering it anyway would mean either
- * relaxing an assertion or running the mode on the default engine while claiming
- * the engine was under test. The unparameterised {@link runConformance} keeps
- * covering every mode on the default engine, so no mode loses coverage.
+ * It used to run one mode and record the engine's refusal of the other: revm
+ * could not serve `stateMode:'trie'` while that mode ran on `MerkleStateManager`
+ * (ADR 0005). Every node now runs on the flat state and trie mode derives its
+ * trie from it between blocks (ADR 0014), so there is no mode an engine has to
+ * refuse and the battery covers both, on the engine under test, with nothing
+ * relaxed. The trie-mode run is the one that holds the ROOTS revm's writes lead
+ * to against the reference's post-state.
  */
 export async function runConformanceOnEngine(opts: {
 	makeEngine: EngineFactory;
-	/** The one mode this engine serves — the battery runs here. */
-	serves: StateMode;
-	/** Modes this engine must refuse AT CONSTRUCTION, naming the reason. */
-	refuses: StateMode[];
 }): Promise<EngineConformanceReport> {
-	const refusals: {stateMode: StateMode; error: string}[] = [];
-	for (const stateMode of opts.refuses) {
-		try {
-			const n = await createNode({
-				chainId: CHAIN_ID,
-				stateMode,
-				engine: await opts.makeEngine(),
-			});
-			refusals.push({stateMode, error: 'DID_NOT_THROW'});
-			await n.dispose();
-		} catch (e) {
-			refusals.push({stateMode, error: String((e as Error)?.message ?? e)});
-		}
-	}
-	const served = await runBattery(opts.serves, opts.makeEngine);
-	return {served, refusals, totalMismatches: served.totalMismatches};
+	const none = await runBattery('none', opts.makeEngine);
+	const trie = await runBattery('trie', opts.makeEngine);
+	return {
+		byMode: {none, trie},
+		totalMismatches: none.totalMismatches + trie.totalMismatches,
+	};
 }

@@ -47,8 +47,9 @@
  *      answer.
  *   6. Both wasm delivery shapes work: a bundler-resolved asset and a
  *      runtime-fetched URL, through the same code path.
- *   7. `stateMode:'trie'` is REFUSED at construction, naming the reason, rather
- *      than constructing and failing at the first opcode.
+ *   7. `stateMode:'trie'` is SERVED: every node runs on the flat state and the
+ *      trie is derived from it between blocks, so revm computes the block and the
+ *      node reports a real root (ADR 0014; it used to be refused here).
  *   7b. An engine asked for a READ before a node bound it refuses, rather than
  *      guessing a fork and costing the read under rules the caller never chose.
  *      `createNode()` connects first, so only a consumer hand-driving a
@@ -1109,17 +1110,46 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	);
 	await urlNode.node.dispose();
 
-	// ---------- a mode the engine cannot serve is refused LOUDLY ----------
-	try {
+	// ---------- trie mode is SERVED (it used to be refused) ----------
+	// The trie is derived from the flat state after the block, so the engine
+	// never reads it: revm executes, and the block header carries a real root
+	// that `getStateRoot()` agrees with.
+	{
 		const trieNode = await createNode({
 			chainId: CHAIN_ID,
 			stateMode: 'trie',
+			miningConfig: {type: 'auto'},
+			initialBalances: {[account.address]: 10n ** 24n},
 			engine: await createRevmEngine({wasm: bundlerResolvedWasm}),
 		});
-		out.trieRefusal = 'DID_NOT_THROW';
+		const genesisRoot = await trieNode.getStateRoot();
+		const raw = await account.signTransaction({
+			chainId: CHAIN_ID,
+			type: 'eip1559',
+			nonce: 0,
+			gas: 21_000n,
+			maxFeePerGas: 2_000_000_000n,
+			maxPriorityFeePerGas: 1n,
+			to: '0x000000000000000000000000000000000000beef',
+			value: 1n,
+		});
+		const rcpt = (await trieNode.request({
+			method: 'eth_sendRawTransactionSync',
+			params: [raw],
+		})) as {status: string; blockNumber: string};
+		const block = (await trieNode.request({
+			method: 'eth_getBlockByNumber',
+			params: [rcpt.blockNumber, false],
+		})) as {stateRoot: string};
+		out.trieServed = {
+			engineId: trieNode.engine.id,
+			stateMode: trieNode.stateMode,
+			status: rcpt.status,
+			genesisRoot,
+			headerRoot: block.stateRoot,
+			liveRoot: await trieNode.getStateRoot(),
+		};
 		await trieNode.dispose();
-	} catch (e) {
-		out.trieRefusal = String((e as Error)?.message ?? e);
 	}
 
 	// ---------- an engine asked to READ before a node bound it ----------

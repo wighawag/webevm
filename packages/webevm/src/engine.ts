@@ -237,8 +237,7 @@ function effectiveGasPrice(tx: TypedTransaction, blockBaseFee: bigint): bigint {
  *     engine to mine on, so this is a missing capability the node cannot supply;
  *  3. its `connect(context)` throws, either because it cannot initialise (no
  *     wasm, no memory) or because it refuses this node's configuration (the
- *     revm engine refuses `stateMode:'trie'`, having no synchronous view of a
- *     `MerkleStateManager` to read through).
+ *     revm engine refuses a hardfork it cannot cost, ADR 0008).
  *
  * The engine's own message is preserved verbatim inside the thrown error's
  * message (not only as `cause`), because the engine is the only party that

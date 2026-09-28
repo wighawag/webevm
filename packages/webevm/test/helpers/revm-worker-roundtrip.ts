@@ -11,9 +11,10 @@
  * What it measures, in the order it measures it:
  *   1. the node's identity ACROSS the boundary (`engine.id`, `stateMode`,
  *      `senderMode`; the engine id is what the node was BUILT with, so it is
- *      necessary but weak on its own), plus the one refusal only a revm-backed
- *      node produces: `stateMode:'trie'` is rejected at `createNode()` INSIDE
- *      the Worker and the reason reaches the caller intact;
+ *      necessary but weak on its own), plus a SECOND worker node in
+ *      `stateMode:'trie'`, which revm serves (the trie is derived from the flat
+ *      state, ADR 0014; it used to be refused here), reporting a real root
+ *      across the boundary;
  *   2. REFERENCE EXECUTION GAS through the boundary, on a freshly deployed
  *      contract: `number()` 2446, `sumTo(2000)` 498689, `keccakLoop(2000)`
  *      1107052 and its result hash. This is the strong evidence: an engine that
@@ -87,13 +88,11 @@ export async function revmWorkerRoundtrip(workerUrl: string, sumTo: number) {
 		senderMode: node.senderMode,
 	};
 
-	// ---- the constraint travels into the Worker UNCHANGED ----
-	// revm serves `stateMode:'none'` only (ADR 0005: `MerkleStateManager` has no
-	// synchronous view for it to read through) and refuses anything else at
-	// `createNode()`. Asked for through a comlink boundary, that refusal must still
-	// reach the caller as itself rather than as an opaque worker failure. It is also
-	// the one observation here that ONLY a revm-backed node can produce: a node that
-	// had quietly fallen back to `@ethereumjs/evm` would happily build a trie node.
+	// ---- trie mode, on revm, INSIDE the Worker ----
+	// revm serves `stateMode:'trie'` (the trie is derived from the flat state
+	// between blocks and no engine reads it, ADR 0014; this used to be the
+	// refusal the recipe asserted). Built inside the Worker, it must still be
+	// revm, and its root must cross the boundary as a real one.
 	const trieWorker = new Worker(workerUrl, {type: 'module'});
 	try {
 		const trieNode = await createWorkerNode({
@@ -101,12 +100,17 @@ export async function revmWorkerRoundtrip(workerUrl: string, sumTo: number) {
 			chainId: CHAIN_ID,
 			stateMode: 'trie',
 		});
+		await trieNode.mine();
+		results.trieServed = {
+			engineId: trieNode.engine?.id,
+			stateMode: trieNode.stateMode,
+			root: await trieNode.getStateRoot(),
+		};
 		await trieNode.dispose();
-		results.trieRefusal = 'DID_NOT_THROW';
 	} catch (e) {
-		results.trieRefusal = String((e as Error)?.message ?? e);
-		trieWorker.terminate();
+		results.trieServed = `threw:${String((e as Error)?.message ?? e)}`;
 	}
+	trieWorker.terminate();
 
 	const send = async (raw: `0x${string}`) =>
 		(await node.request({

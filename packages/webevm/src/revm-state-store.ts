@@ -21,9 +21,12 @@
  * node's own `OverlayStorageStateManager` — `SimpleStateManager`'s two PUBLIC
  * account/code checkpoint stacks plus our storage OVERLAY stack — so this module
  * reaches past the interface into that one implementation, exactly as `node.ts`'s
- * `dumpState` already does in `'none'` mode. The full cost, the alternatives
- * that were rejected, and why `stateMode:'trie'` therefore cannot be served are
- * in `docs/adr/0005-revm-reads-the-nodes-state-through-simplestatemanagers-stacks.md`.
+ * `dumpState` already does. The full cost and the alternatives that were
+ * rejected are in
+ * `docs/adr/0005-revm-reads-the-nodes-state-through-simplestatemanagers-stacks.md`.
+ * Every node, `stateMode:'trie'` included, runs on this state manager (ADR 0014:
+ * trie mode's trie is derived from it between blocks), so this store serves them
+ * all.
  *
  * Three consequences worth having in your head before editing this file:
  *

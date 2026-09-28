@@ -11,15 +11,13 @@
  * transactions had quietly gone back to `@ethereumjs/vm` would diff the reference
  * against itself and pass every assertion in it.
  *
- * WHICH MODES, and why it is not a choice. The engine serves `stateMode:'none'`
- * and REFUSES `'trie'` at construction (`MerkleStateManager` has no synchronous
- * view for revm to read through — ADR 0005), so the battery runs in `'none'` here
- * and `'trie'` keeps its existing default-engine coverage in `conformance.spec.ts`.
- * The refusal is recorded by `runConformanceOnEngine` rather than assumed, so the
- * split stays honest if the engine's shape ever changes.
+ * WHICH MODES: both. revm used to REFUSE `stateMode:'trie'` (it ran on
+ * `MerkleStateManager`, which has no synchronous view, ADR 0005); every node now
+ * runs on the flat state and trie mode derives its trie from it between blocks
+ * (ADR 0014), so the whole battery runs on revm in `'none'` AND in `'trie'`.
  *
  * ONE ENGINE PER NODE, one COMPILATION for all of them. The battery builds two
- * nodes and the refusal probe builds another, and an engine instance binds to
+ * nodes per mode, and an engine instance binds to
  * exactly one node (a second `createNode()` is refused). So a factory hands each
  * node a fresh engine, all sharing ONE compiled `WebAssembly.Module` — which is
  * precisely what `createRevmEngine`'s `wasm` option accepting a compiled module
@@ -35,7 +33,5 @@ export async function runRevmConformance() {
 	const wasm = await WebAssembly.compile(bundlerResolvedWasm);
 	return runConformanceOnEngine({
 		makeEngine: () => createRevmEngine({wasm}),
-		serves: 'none',
-		refuses: ['trie'],
 	});
 }

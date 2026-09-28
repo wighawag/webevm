@@ -21,7 +21,8 @@
  *     NUMBER / TIMESTAMP / GASLIMIT) is the node's own, and identical on both
  *   - BLOCKHASH answers with the node's real block hashes
  *   - both wasm delivery shapes (bundler-resolved asset, runtime-fetched URL)
- *   - `stateMode:'trie'` is refused at construction, naming the reason
+ *   - `stateMode:'trie'` is SERVED (a real root in the header and from
+ *     `getStateRoot()`), since the trie is derived from the flat state
  *   - an engine asked for a read BEFORE a node bound it refuses, rather than
  *     costing that read at a fork the caller never chose
  *   - the two exported hardfork tables cannot be EDITED by a consumer, so the
@@ -217,10 +218,17 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 	expect(c.runtimeUrlCall).toBe(c.runtimeUrlCallExpected);
 	expect(BigInt(c.runtimeUrlCall)).not.toBe(0n);
 
-	// a stateMode the engine cannot serve is refused AT CONSTRUCTION, out loud
-	expect(c.trieRefusal).not.toBe('DID_NOT_THROW');
-	expect(c.trieRefusal).toContain('trie');
-	expect(c.trieRefusal).toMatch(/revm/i);
+	// trie mode is SERVED on revm (it used to be refused at construction): the
+	// block revm executed carries a real root, the node reports the same one, and
+	// it moved from genesis.
+	const t = c.trieServed;
+	expect(t.engineId).toBe('revm-wasm');
+	expect(t.stateMode).toBe('trie');
+	expect(t.status).toBe('0x1');
+	expect(t.headerRoot).toMatch(/^0x[0-9a-f]{64}$/);
+	expect(BigInt(t.headerRoot)).not.toBe(0n);
+	expect(t.liveRoot).toBe(t.headerRoot);
+	expect(t.genesisRoot).not.toBe(t.headerRoot);
 
 	// ...and an engine asked to READ before a node bound it refuses too, naming
 	// what is missing and what to do. `createNode()` always connects first, so this
