@@ -94,5 +94,12 @@ test('IndexedDB persistence + eth_getLogs survive a real page reload', async ({
 	expect(write.historical.codeAtGenesis).toBe('0x');
 	expect(read.historical).toEqual(write.historical);
 
+	// Every log's `blockTimestamp` (execution-apis#639) equals its block's
+	// timestamp on both sides of the reload, and the reloaded page serves the same
+	// values: an indexer that refuses a log without it keeps indexing.
+	expect(write.logTimestamps.logs).toHaveLength(3);
+	expect(write.logTimestamps.agreeWithBlocks).toBe(true);
+	expect(read.logTimestamps).toEqual(write.logTimestamps);
+
 	await h.dispose();
 });

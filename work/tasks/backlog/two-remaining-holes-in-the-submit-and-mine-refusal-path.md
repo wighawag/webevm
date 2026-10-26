@@ -41,3 +41,7 @@ Decide the honest resolution for 2 rather than the first that stops the symptom:
 > Match that contract exactly for the new base-fee refusal. Those phrases are now pinned character for character in a spec and consumers branch on them, so a fifth refusal that words itself differently is a new inconsistency rather than a fix.
 >
 > On the batch hole, weigh the three resolutions rather than taking the first that stops the symptom. The node already refuses eagerly at submit for intrinsic gas, which is the nearest precedent in the codebase.
+
+## Update (2026-10-27)
+
+Since `logs-carry-their-blocks-timestamp`, the orphaned receipts hole 2 leaves behind are no longer served naming a block that does not exist: `logToRpc` looks up each log's block for its `blockTimestamp` and throws when the block is missing, so `eth_getTransactionReceipt` for an earlier transaction of a refused batch now refuses. Fixing hole 2 so no receipt is recorded without its block makes that guard unreachable again.
