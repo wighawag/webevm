@@ -1890,13 +1890,32 @@ export async function createNodeWithInternals(
 		};
 	}
 
+	/**
+	 * One log as RPC serves it, from `eth_getLogs` and inside receipts alike.
+	 *
+	 * `blockTimestamp` (execution-apis#639, served by geth, reth, besu, erigon,
+	 * anvil and Hardhat's EDR; some indexers refuse a log without it) is LOOKED UP
+	 * from the log's block here rather than stored on {@link SerializedLog}. The
+	 * block store holds every block a log can name (it is only ever cleared to be
+	 * refilled by `loadState`), and its header is the one source of truth for the
+	 * timestamp, so a lookup cannot disagree with `eth_getBlockBy*`. Storing it
+	 * instead would duplicate the value on every log, change the persisted dump's
+	 * shape, and leave a dump written without it needing a fallback to this very
+	 * lookup anyway; as it is, every dump, old or new, answers with it.
+	 */
 	function logToRpc(l: SerializedLog) {
+		const stored = blockStore.get(l.blockNumber);
+		if (!stored) {
+			// Unreachable: a log is only recorded together with its block.
+			throw new Error(`log names block ${l.blockNumber}, which the node lacks`);
+		}
 		return {
 			address: l.address,
 			topics: l.topics,
 			data: l.data,
 			blockNumber: numHex(l.blockNumber),
 			blockHash: l.blockHash,
+			blockTimestamp: numHex(stored.header.timestamp),
 			transactionHash: l.transactionHash,
 			transactionIndex: numHex(l.transactionIndex),
 			logIndex: numHex(l.logIndex),
