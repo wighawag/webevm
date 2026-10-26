@@ -29,6 +29,11 @@
  * value SURVIVED, which is why these are compared write-side against read-side
  * rather than against a literal.
  *
+ * AND EVERY LOG'S `blockTimestamp` RIDES ALONG (execution-apis#639): each side
+ * reports, for every log `eth_getLogs` serves, its `blockTimestamp` and whether
+ * it equals the `timestamp` of the block it names, so a reloaded page keeps
+ * serving the field an indexer refuses a log without.
+ *
  * THE HISTORY RIDES ALONG TOO. Both nodes are created with `stateHistory`, and
  * each reports the same HISTORICAL reads (point reads and an `eth_call` pinned
  * to blocks below the head), which must agree across the reload: the undo log
@@ -170,6 +175,36 @@ async function headerFacts(
 	};
 }
 
+/** Every served log's `blockTimestamp`, and whether it is its block's. */
+export interface LogTimestampFacts {
+	logs: {blockNumber: string; blockTimestamp: string | undefined}[];
+	/** Every log has a `blockTimestamp` equal to its block's `timestamp`. */
+	agreeWithBlocks: boolean;
+}
+
+async function logTimestampFacts(node: SlimNode): Promise<LogTimestampFacts> {
+	// Raw RPC rather than viem, so what is checked is what the node serves.
+	const logs = (await node.request({
+		method: 'eth_getLogs',
+		params: [{fromBlock: '0x0', toBlock: 'latest'}],
+	})) as any[];
+	let agreeWithBlocks = logs.length > 0;
+	for (const log of logs) {
+		const block = (await node.request({
+			method: 'eth_getBlockByNumber',
+			params: [log.blockNumber, false],
+		})) as any;
+		if (log.blockTimestamp !== block.timestamp) agreeWithBlocks = false;
+	}
+	return {
+		logs: logs.map((l) => ({
+			blockNumber: l.blockNumber,
+			blockTimestamp: l.blockTimestamp,
+		})),
+		agreeWithBlocks,
+	};
+}
+
 function clientsFor(node: SlimNode) {
 	const transport = custom(
 		{request: ({method, params}: any) => node.request({method, params})},
@@ -184,6 +219,7 @@ function clientsFor(node: SlimNode) {
 
 export interface WriteResult extends HeaderFacts {
 	historical: HistoricalFacts;
+	logTimestamps: LogTimestampFacts;
 	/** Where the history facts are pinned, for the read phase to ask the same. */
 	pinned: number;
 	beforeTransfer: number;
@@ -254,10 +290,12 @@ export async function persistWrite(
 		pinned,
 		beforeTransfer,
 	);
+	const logTimestamps = await logTimestampFacts(node);
 
 	await node.dispose();
 	return {
 		historical,
+		logTimestamps,
 		pinned,
 		beforeTransfer,
 		engineId,
@@ -274,6 +312,8 @@ export async function persistWrite(
 export interface ReadResult extends HeaderFacts {
 	/** The same historical reads, answered by the POST-RELOAD node. */
 	historical: HistoricalFacts;
+	/** The same log timestamps, served by the POST-RELOAD node. */
+	logTimestamps: LogTimestampFacts;
 	/** Which EVM the POST-RELOAD node came up on. */
 	engineId: string;
 	loaded: boolean;
@@ -366,10 +406,12 @@ export async function persistRead(
 		pinnedAt.pinned,
 		pinnedAt.beforeTransfer,
 	);
+	const logTimestamps = await logTimestampFacts(node);
 	await node.dispose();
 	return {
 		...header,
 		historical,
+		logTimestamps,
 		engineId,
 		loaded,
 		number,

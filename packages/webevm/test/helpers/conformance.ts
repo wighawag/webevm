@@ -1448,6 +1448,15 @@ async function runBattery(
 					BigInt(log.blockNumber),
 					BigInt(block.number),
 				);
+				// execution-apis#639: the block's timestamp rides on every log, in
+				// the block's own encoding (a hex quantity), so it is compared as
+				// the string the block serves rather than as a number.
+				cmp(
+					m,
+					`${blockTxs[i].label}: log.blockTimestamp`,
+					log.blockTimestamp,
+					block.timestamp,
+				);
 				cmp(
 					m,
 					`${blockTxs[i].label}: log.transactionHash`,

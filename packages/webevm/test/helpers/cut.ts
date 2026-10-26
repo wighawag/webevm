@@ -99,6 +99,9 @@
  *                            reaches a worker-hosted node, and refuses a bad
  *                            value. ENGINE-PARAMETERISED (revm through
  *                            ./cut-revm.ts)
+ *   - 'log-block-timestamp': every log from `eth_getLogs` and from a receipt
+ *                            carries `blockTimestamp`, equal to its block's
+ *                            timestamp, before and after a dump/load
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -139,6 +142,7 @@ import {
 	runGenesisTimestampConstructionChecks,
 	runGenesisTimestampWorkerChecks,
 } from './genesis-timestamp.js';
+import {runLogBlockTimestampChecks} from './log-block-timestamp.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -530,6 +534,15 @@ const cut: CodeUnderTest = {
 						String(ctx.params.workerUrl),
 					),
 				};
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		if (ctx.params.mode === 'log-block-timestamp') {
+			try {
+				results.logBlockTimestamp = await runLogBlockTimestampChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
