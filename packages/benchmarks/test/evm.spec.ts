@@ -107,7 +107,7 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-ONE TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-THREE TIMES SINCE. Most recent first:
  *
  * 442.6 -> 442.7 KB raw / 133.4 KB gzip (unchanged), by
  * `logs-carry-their-blocks-timestamp`: every RPC log carries `blockTimestamp`
