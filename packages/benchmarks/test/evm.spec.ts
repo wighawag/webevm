@@ -107,7 +107,14 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-ONE TIMES SINCE. Most recent first:
+ *
+ * 442.6 -> 442.7 KB raw / 133.4 KB gzip (unchanged), by
+ * `logs-carry-their-blocks-timestamp`: every RPC log carries `blockTimestamp`
+ * (execution-apis#639). The 0.1 KB is `logToRpc` in `src/node.ts` looking up
+ * the log's block for its timestamp, plus the message of the throw guarding a
+ * log whose block the node lacks. No import was added. In the CORE graph
+ * because every node serves logs.
  *
  * 442.3 -> 442.6 KB raw / 133.3 -> 133.4 KB gzip, by
  * `a-genesis-timestamp-option`: the new `genesisTimestamp` option pins block 0's
@@ -437,7 +444,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 442.6, gzipKB: 133.4};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 442.7, gzipKB: 133.4};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
