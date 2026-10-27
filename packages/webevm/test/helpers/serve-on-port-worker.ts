@@ -15,10 +15,10 @@
  * relies on.
  */
 import {expose} from 'comlink';
-import {providerOverPort} from '@eip-1193/over-port';
+import {providerOverPort, type ProviderOverPort} from '@eip-1193/over-port';
 import {createNodeWorkerApi} from '../../src/worker-host.js';
 
-type Provider = ReturnType<typeof providerOverPort>;
+type Provider = ProviderOverPort;
 
 /** One answer, as the page reads it back (plain values only: it is cloned). */
 export type ConsumerAnswer =

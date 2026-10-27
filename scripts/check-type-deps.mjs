@@ -28,6 +28,13 @@ function walk(dir, out) {
 	return out;
 }
 
+// DefinitelyTyped's name for a package: `@types/x`, or `@types/scope__x` for `@scope/x`.
+function typesPackageOf(name) {
+	return name.startsWith('@') ? `@types/${name.slice(1).replace('/', '__')}` : `@types/${name}`;
+}
+
+// Known limits, none reachable in the packages this guards: legacy uppercase package names are not
+// recognised, and an npm package sharing a Node builtin's name (`buffer`) is treated as the builtin.
 function packageNameOf(specifier) {
 	if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(\/.*)?$/.test(specifier)) return undefined;
 	if (specifier.startsWith('node:')) return undefined;
@@ -37,9 +44,14 @@ function packageNameOf(specifier) {
 	return name;
 }
 
-// Matches `from '<x>'`, `import '<x>'`, `import('<x>')` and `require('<x>')` in declaration files.
-// Declaration files are small, line-based and never minified, so a simple bounded regex is fine.
-const importPattern = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"]([^'"\n]{1,200})['"]/g;
+// Matches `from '<x>'`, `import '<x>'`, `import('<x>')`, `require('<x>')` and `declare module '<x>'`
+// (an augmentation needs `<x>` resolvable for consumers too) in declaration files. Declaration files
+// are small, line-based and never minified, so simple bounded regexes are fine.
+const importPattern =
+	/(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*|\bdeclare\s+module\s+)['"]([^'"\n]{1,200})['"]/g;
+// `/// <reference types="x" />`, which tsc emits on its own when a declaration uses a global types
+// package (`node` for a `Buffer`, say). `path=` and `lib=` references are not packages.
+const referencePattern = /^\s*\/\/\/\s*<reference\s+types\s*=\s*["']([^"'\n]{1,200})["']/gm;
 
 let failures = 0;
 const dirs = process.argv.slice(2);
@@ -53,7 +65,18 @@ for (const dir of dirs.length ? dirs : ['.']) {
 		...Object.keys(pkg.peerDependencies ?? {}),
 		...Object.keys(pkg.optionalDependencies ?? {}),
 	]);
-	const roots = (pkg.files ?? ['dist']).map((f) => join(pkgDir, f)).filter((p) => existsSync(p));
+	// Without `files`, npm publishes the whole package, so scan all of it (the walk skips
+	// node_modules). Entries are used as plain paths: a glob or `!negation` entry is reported and
+	// skipped, since this script has no glob matcher.
+	const roots = [];
+	for (const entry of pkg.files ?? ['.']) {
+		if (/[*!?{]/.test(entry)) {
+			console.warn(`${pkg.name}: 'files' entry '${entry}' is a pattern, not checked`);
+			continue;
+		}
+		const p = join(pkgDir, entry);
+		if (existsSync(p)) roots.push(p);
+	}
 	const files = [];
 	for (const root of roots) {
 		if (statSync(root).isDirectory()) walk(root, files);
@@ -73,13 +96,18 @@ for (const dir of dirs.length ? dirs : ['.']) {
 	}
 	const missing = new Map();
 	for (const file of files) {
-		// Comments can quote import statements (examples in TSDoc), so drop them first.
-		const content = readFileSync(file, 'utf8')
-			.replace(/\/\*[\s\S]*?\*\//g, '')
-			.replace(/^\s*\/\/.*$/gm, '');
-		for (const match of content.matchAll(importPattern)) {
-			const name = packageNameOf(match[1]);
-			if (name && !declared.has(name) && !declared.has(`@types/${name}`)) {
+		const raw = readFileSync(file, 'utf8');
+		// Comments can quote import statements (examples in TSDoc), so drop them, keeping triple-slash
+		// directives. Caveat: the block-comment stripper is not string-aware, so a string literal type
+		// containing a comment opener could hide what follows; no declaration emitted here does that.
+		const content = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/(?!\/\s*<reference).*$/gm, '');
+		const specifiers = [
+			...[...content.matchAll(importPattern)].map((m) => m[1]),
+			...[...raw.matchAll(referencePattern)].map((m) => m[1]),
+		];
+		for (const specifier of specifiers) {
+			const name = packageNameOf(specifier);
+			if (name && !declared.has(name) && !declared.has(typesPackageOf(name))) {
 				if (!missing.has(name)) missing.set(name, file);
 			}
 		}
