@@ -20,7 +20,7 @@ name: release
 # even though GitHub still redirects the old repo URL.
 #
 # WHY THIS WORKFLOW DOES NOT RUN THE TEST SUITE, deliberately: `release:ci` runs
-# `format:check` + `build` only. The full matrix (Playwright on Chromium AND
+# `format:check` + `build` + `check:type-deps` only. The full matrix (Playwright on Chromium AND
 # WebKit, the differential conformance battery, and the cross-backend gas gate)
 # lives in `ci.yml`, which runs on `pull_request` and on `push` to main.
 #
@@ -94,7 +94,8 @@ jobs:
       - name: Create Release PR or Publish
         uses: changesets/action@v1
         with:
-          # release:ci format-checks + builds then runs `changeset publish` (the
+          # release:ci format-checks, builds and checks the
+          # published type imports, then runs `changeset publish` (the
           # action itself handles git commits/tags, so no git push here -- unlike
           # the local `release` script, which pushes branches and tags itself).
           # No NPM_TOKEN: npm detects the OIDC environment and authenticates via
