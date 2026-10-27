@@ -29,6 +29,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm build
+      # The published .d.ts files must only import packages the package declares
+      # as a dependency or peer (a devDependency is invisible to consumers).
+      - run: pnpm check:type-deps
 
   test:
     # Two engines on purpose. A JS EVM and a wasm EVM do not degrade the same way
