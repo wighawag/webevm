@@ -102,6 +102,12 @@
  *   - 'log-block-timestamp': every log from `eth_getLogs` and from a receipt
  *                            carries `blockTimestamp`, equal to its block's
  *                            timestamp, before and after a dump/load
+ *   - 'block-clock'        : the node's clock and its time cheats
+ *                            (`evm_setNextBlockTimestamp`, `evm_increaseTime`,
+ *                            the block timestamp interval, `evm_mine`): what a
+ *                            block is stamped with and what its transactions'
+ *                            `TIMESTAMP` reads. ENGINE-PARAMETERISED (revm
+ *                            through ./cut-revm.ts)
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -143,6 +149,7 @@ import {
 	runGenesisTimestampWorkerChecks,
 } from './genesis-timestamp.js';
 import {runLogBlockTimestampChecks} from './log-block-timestamp.js';
+import {runBlockClockChecks} from './block-clock.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -534,6 +541,16 @@ const cut: CodeUnderTest = {
 						String(ctx.params.workerUrl),
 					),
 				};
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// block-clock: the node's clock and the time cheats that move it.
+		if (ctx.params.mode === 'block-clock') {
+			try {
+				results.blockClock = await runBlockClockChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

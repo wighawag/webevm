@@ -194,6 +194,10 @@ method-not-found (`-32601`) — it never fakes a result.
 | `eth_getLogs` | address + topic filtering over mined logs, by `fromBlock`/`toBlock` or by `blockHash` (EIP-234; an unknown hash is `-32000`, a hash together with a range is `-32602`). An omitted `fromBlock` means block **0** here, where geth means `latest`. Every log (here and inside receipts) carries `blockTimestamp`, its block's timestamp (execution-apis#639). **Perf note:** a full linear scan over all logs per call (O(total_logs), no index/cache) — fine for a local chain |
 | `eth_subscribe`/`eth_unsubscribe` | **`newHeads` only**; prefer `onNewHead()` over comlink |
 | `evm_setBalance` / `evm_setNonce` / `evm_setCode` / `evm_setStorageAt` / `evm_setAccount` | anvil/hardhat-style runtime state cheats (mutate live state with no tx); with `computeStateRoot: true`, `getStateRoot()` reflects them straight away, and the next block's root includes them |
+| `evm_setNextBlockTimestamp` / `evm_increaseTime` | time cheats: move [the node's clock](#mining), which stamps the next mined block (and so what `TIMESTAMP` reads). Anvil's, hardhat's and ganache's names and wire shapes, so viem's `setNextBlockTimestamp` / `increaseTime` test actions work unchanged. `[timestamp]` stamps the next block, which must be later than the head's (`-32000` otherwise, hardhat's rule; anvil also admits an equal one), returns `null`, and the clock carries on from it. `[seconds]` adds to the clock's offset and returns the total offset as a JSON number. Numbers, decimal and `0x` strings are accepted, up to a uint64 |
+| `evm_mine` | `[]`, `[timestamp]` or `[{timestamp?, blocks?}]` (anvil's and ganache's forms): mine `blocks` (default 1) blocks now, the first with whatever is pending (an empty block under auto mining), the first stamped `timestamp` if given; returns `"0x0"`. The RPC form of `node.mine()` |
+| `anvil_mine` / `hardhat_mine` | `[blocks?, interval?]`, what viem's `mine()` sends: `blocks` (default 1; 0 mines none) blocks now; an `interval` moves the clock on that many seconds a block, 0 letting a block repeat its parent's timestamp, as on anvil (which takes `hardhat_mine` as an alias); returns `null` |
+| `anvil_setBlockTimestampInterval` / `anvil_removeBlockTimestampInterval` | `[seconds]`: every block is its parent's timestamp plus `seconds` (0 repeats it), the wall clock not consulted, so a chain's timestamps do not depend on how fast it ran; a next timestamp still wins for its block; returns `null`. Remove returns whether one was set. Anvil's names (no other dev node has these), which viem's `setBlockTimestampInterval` / `removeBlockTimestampInterval` send in anvil mode |
 | `evm_sendRawTransactionAs` / `evm_sendRawTransactionSyncAs` | `[raw, from]` — execute as `from`, **skipping ecrecover**. Only exist when `senderMode: 'trusted'`; otherwise a loud `-32601`. See [Sender mode](#sender-mode-recover-authenticated-default-vs-trusted-no-ecrecover) |
 
 ### Intentionally NOT supported (loud `-32601`)
@@ -684,7 +688,27 @@ including the [`stateHistory`](#state-reads-at-past-blocks-statehistory) window.
 ## Mining
 
 `{type:'auto'}` (mine per raw tx — pairs with `eth_sendRawTransactionSync`),
-`{type:'manual'}` (only on `node.mine()`), or `{type:'interval', intervalMs}`.
+`{type:'manual'}` (only on `node.mine()` or `evm_mine`), or `{type:'interval', intervalMs}`.
+
+**The clock.** A mined block is stamped with a next timestamp when one is set
+(`evm_setNextBlockTimestamp`, or `evm_mine`'s timestamp), else its parent's
+timestamp plus an interval when one is set (`anvil_setBlockTimestampInterval`),
+else `blockEnv.timestamp` (when pinned) or the wall clock, plus the offset
+`evm_increaseTime` has accumulated. With no time cheat issued that is exactly
+`blockEnv.timestamp` or the wall clock, as before. The methods are anvil's (and
+hardhat's and ganache's where they share them), so a viem test client drives them:
+
+```ts
+const test = createTestClient({mode: 'anvil', transport: custom(node)});
+await test.setNextBlockTimestamp({timestamp: 1_900_000_000n});
+await test.mine({blocks: 1});
+await test.increaseTime({seconds: 86_400}); // a day later
+await test.setBlockTimestampInterval({interval: 1}); // reproducible from here on
+```
+
+An interval makes a simulated chain reproducible: its timestamps no longer depend
+on how fast it ran. The clock is a setting of the node, not part of `dumpState`;
+`loadState` drops a pending next timestamp. See [ADR 0015](docs/adr/0015-the-node-has-a-clock-and-time-cheats-move-it.md).
 
 ## On comprehensive EVM test fixtures (`ethereum/tests`)
 

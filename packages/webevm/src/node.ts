@@ -949,6 +949,112 @@ export async function createNodeWithInternals(
 	let intervalTimer: ReturnType<typeof setInterval> | undefined;
 
 	/**
+	 * THE NODE'S CLOCK: the timestamp a mined block is stamped with, and the time
+	 * cheats that move it. They are the methods (and the wire shapes) anvil,
+	 * hardhat and ganache already share, so viem's test actions drive them
+	 * unchanged: `evm_setNextBlockTimestamp`, `evm_increaseTime`, `evm_mine`,
+	 * `anvil_mine` (alias `hardhat_mine`, as anvil has it), and anvil's
+	 * `anvil_setBlockTimestampInterval` / `anvil_removeBlockTimestampInterval`,
+	 * which no other dev node defines and so keep anvil's names.
+	 *
+	 * WITH NO CHEAT ISSUED IT IS EXACTLY WHAT IT WAS: `blockEnv.timestamp` when
+	 * pinned, else the wall clock in whole seconds, with no reference to the parent.
+	 * Whether that default should become strictly increasing is a separate question
+	 * (work/notes/observations/2026-09-28-mined-block-timestamps-are-not-strictly-increasing.md)
+	 * which this does not decide. A block reads the cheats in this order:
+	 *
+	 *   1. a NEXT TIMESTAMP, set once and used by the next block mined; it must be
+	 *      later than the head's (hardhat's rule, and post-Merge consensus; anvil
+	 *      also admits an equal one), and once a block carries it the OFFSET moves
+	 *      so that the clock carries on from there, as on anvil and hardhat;
+	 *   2. an INTERVAL: the parent's timestamp plus this many seconds (0 repeats
+	 *      the parent's), the wall clock not consulted, so a chain's timestamps do
+	 *      not depend on when or how fast it ran;
+	 *   3. the BASE (`blockEnv.timestamp`, else the wall clock) plus the OFFSET,
+	 *      which `evm_increaseTime` adds to.
+	 *
+	 * NODE SETTINGS, NOT CHAIN STATE: none of it is in `dumpState`. `loadState`
+	 * clears a pending next timestamp (the loaded head may already be past it);
+	 * the offset and the interval belong to this node and survive it.
+	 */
+	let nextTimestamp: bigint | undefined;
+	let timeOffset = 0n;
+	let timestampInterval: bigint | undefined;
+	const clockBase = () =>
+		blockEnv?.timestamp ?? BigInt(Math.floor(Date.now() / 1000));
+	const headTimestamp = () =>
+		blockStore.get(latestNumber)?.block.header.timestamp ?? 0n;
+	function plannedTimestamp(): bigint {
+		if (nextTimestamp !== undefined) return nextTimestamp;
+		if (timestampInterval !== undefined)
+			return headTimestamp() + timestampInterval;
+		return clockBase() + timeOffset;
+	}
+
+	/**
+	 * A time cheat's integer: a JSON number or a quantity string (hex `0x…` or
+	 * decimal), the shapes anvil accepts; at most a uint64, a header timestamp's
+	 * width. Anything else is `-32602`, naming the method, rather than a guess.
+	 */
+	function quantity(value: unknown, method: string, what = 'seconds'): bigint {
+		let s: bigint | undefined;
+		if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
+			s = BigInt(value);
+		else if (
+			typeof value === 'string' &&
+			(/^0x[0-9a-fA-F]+$/.test(value) || /^[0-9]+$/.test(value))
+		)
+			s = BigInt(value);
+		if (s === undefined || s >= 2n ** 64n)
+			throw new RpcError(
+				-32602,
+				`${method}: expected a non-negative integer number of ${what} below 2^64, got ${JSON.stringify(value)}`,
+			);
+		return s;
+	}
+
+	/**
+	 * A next timestamp must be later than the head's: post-Merge blocks are, and
+	 * hardhat refuses an equal one in the same words.
+	 */
+	function laterThanHead(value: unknown, method: string): bigint {
+		const t = quantity(value, method);
+		const head = headTimestamp();
+		if (t <= head)
+			throw new RpcError(
+				-32000,
+				`${method}: timestamp ${t} is lower than or equal to previous block's timestamp ${head}`,
+			);
+		return t;
+	}
+
+	/**
+	 * Mine `blocks` blocks now, with whatever is pending in the first (nothing
+	 * under auto mining), as anvil's `anvil_mine` does. Without an `interval` the
+	 * clock stamps each. With one, it first moves the clock on by `interval`
+	 * seconds and stamps the later of the clock and the parent plus `interval`:
+	 * 0 lets a block repeat its parent's timestamp (what viem's `mine()` sends by
+	 * default). A pending next timestamp still stamps the first block, and an
+	 * interval set by `anvil_setBlockTimestampInterval` still stamps every one,
+	 * as on anvil. The clock carries on from the last block.
+	 */
+	async function mineBlocks(blocks: bigint, interval?: bigint): Promise<void> {
+		for (let i = 0n; i < blocks; i++) {
+			if (
+				interval !== undefined &&
+				nextTimestamp === undefined &&
+				timestampInterval === undefined
+			) {
+				timeOffset += interval;
+				const clock = clockBase() + timeOffset;
+				const floor = headTimestamp() + interval;
+				nextTimestamp = clock > floor ? clock : floor;
+			}
+			await mineBlock();
+		}
+	}
+
+	/**
 	 * THE BLOCK'S LOGS BLOOM: the OR of its receipts' own blooms, which is what a
 	 * block bloom IS. Derived here rather than carried out of the mining loop so
 	 * that `loadState` can rebuild it for a dump written before `SerializedBlock`
@@ -1009,6 +1115,12 @@ export async function createNodeWithInternals(
 	): Promise<{blockNumber: number; blockHash: string; txHashes: string[]}> {
 		const number = blockEnv?.number ?? BigInt(latestNumber + 1);
 		const blockBaseFee = blockEnv?.baseFeePerGas ?? baseFeePerGas;
+		// THE NODE'S CLOCK (above): unchanged from the wall clock or
+		// `blockEnv.timestamp` until a time cheat is issued. A next timestamp is
+		// spent only once the block is stored, so a refused transaction leaves it
+		// for the block that does get mined.
+		const timestamp = plannedTimestamp();
+		const spendsNextTimestamp = nextTimestamp !== undefined;
 		const block = createBlock(
 			{
 				header: {
@@ -1016,8 +1128,7 @@ export async function createNodeWithInternals(
 					gasLimit: minedBlockGasLimit,
 					baseFeePerGas: blockBaseFee,
 					parentHash,
-					timestamp:
-						blockEnv?.timestamp ?? BigInt(Math.floor(Date.now() / 1000)),
+					timestamp,
 					...(blockEnv?.coinbase
 						? {coinbase: createAddressFromString(blockEnv.coinbase)}
 						: {}),
@@ -1130,6 +1241,10 @@ export async function createNodeWithInternals(
 		// The root BEFORE the record is taken below: `currentStateRoot` applies the
 		// open record, which at this point is exactly what this block changed.
 		storeBlock(block, txHashes, blockLogs, await currentStateRoot());
+		if (spendsNextTimestamp) {
+			nextTimestamp = undefined;
+			timeOffset = timestamp - clockBase();
+		}
 		// THE BLOCK'S CHANGE SET is everything written since the previous head was
 		// mined: this block's transactions AND any `evm_set*` cheat issued between
 		// the two blocks, which belongs to this block (the first one that can see
@@ -2786,6 +2901,74 @@ export async function createNodeWithInternals(
 				return true;
 			}
 
+			// ---- Time cheats: move THE NODE'S CLOCK ----
+			// They change what the NEXT mined block is stamped with and nothing
+			// already mined; see the clock's own comment for the order a block reads
+			// them in. Names, parameters and results are anvil's (hardhat and
+			// ganache share the `evm_*` ones), so viem's test actions reach them;
+			// mining goes through `mineBlock`, already inside the serialisation point.
+			case 'evm_setNextBlockTimestamp': {
+				// params: [timestamp] — the next block's, once; later than the head's.
+				// Returns null, as anvil does.
+				nextTimestamp = laterThanHead(params[0], 'evm_setNextBlockTimestamp');
+				return null;
+			}
+			case 'evm_increaseTime': {
+				// params: [seconds] — added to the offset. Returns the TOTAL offset in
+				// seconds as a JSON number, as anvil and ganache do.
+				timeOffset += quantity(params[0], 'evm_increaseTime');
+				return Number(timeOffset);
+			}
+			case 'anvil_setBlockTimestampInterval': {
+				// params: [seconds] — each block is its parent's plus this (0 repeats
+				// the parent's); a next timestamp still wins for its block. Returns null.
+				timestampInterval = quantity(
+					params[0],
+					'anvil_setBlockTimestampInterval',
+				);
+				return null;
+			}
+			case 'anvil_removeBlockTimestampInterval': {
+				// Returns whether an interval was set, as anvil does.
+				const was = timestampInterval !== undefined;
+				timestampInterval = undefined;
+				return was;
+			}
+			case 'evm_mine': {
+				// params: [], [timestamp], or [{timestamp?, blocks?}] (anvil's and
+				// ganache's options) — mine `blocks` (default 1) blocks NOW, the first
+				// with whatever is pending (nothing under auto mining, so an empty
+				// block): the RPC form of `node.mine()`. A timestamp is
+				// `evm_setNextBlockTimestamp` for the first. Returns "0x0", as anvil
+				// and ganache do.
+				const opt = params[0];
+				let blocks = 1n;
+				let timestamp: unknown;
+				if (opt != null && typeof opt === 'object' && !Array.isArray(opt)) {
+					const o = opt as {timestamp?: unknown; blocks?: unknown};
+					if (o.blocks != null)
+						blocks = quantity(o.blocks, 'evm_mine', 'blocks');
+					timestamp = o.timestamp ?? undefined;
+				} else if (opt != null) timestamp = opt;
+				if (timestamp !== undefined)
+					nextTimestamp = laterThanHead(timestamp, 'evm_mine');
+				await mineBlocks(blocks);
+				return '0x0';
+			}
+			case 'anvil_mine':
+			case 'hardhat_mine': {
+				// params: [blocks?, interval?] — `blocks` (default 1, 0 mines none)
+				// blocks now; an interval moves the clock on by that many seconds a
+				// block (see `mineBlocks`); viem's `mine()` sends both. Returns null,
+				// as anvil does (which takes `hardhat_mine` as an alias).
+				const blocks =
+					params[0] == null ? 1n : quantity(params[0], args.method, 'blocks');
+				const interval =
+					params[1] == null ? undefined : quantity(params[1], args.method);
+				await mineBlocks(blocks, interval);
+				return null;
+			}
+
 			case 'eth_gasPrice':
 				return numHex(gasPrice);
 			case 'eth_maxPriorityFeePerGas':
@@ -3106,6 +3289,10 @@ export async function createNodeWithInternals(
 	}
 
 	async function loadState(state: SerializedState): Promise<void> {
+		// A pending next timestamp was set against the OLD head; the loaded one may
+		// already be past it (the clock's offset and interval are node settings and
+		// stay).
+		nextTimestamp = undefined;
 		// Rehydrate accounts/code/storage directly into SimpleStateManager.
 		for (const [addr, accHex] of Object.entries(state.accounts)) {
 			const acc = createAccountFromRLP(hexToBytes(accHex));
@@ -3271,11 +3458,16 @@ export async function createNodeWithInternals(
 	async function persistingRequest(args: RequestArguments): Promise<unknown> {
 		const out = await baseRequest(args);
 		if (
-			(args.method === 'eth_sendRawTransaction' ||
+			((args.method === 'eth_sendRawTransaction' ||
 				args.method === 'eth_sendRawTransactionSync' ||
 				args.method === 'evm_sendRawTransactionAs' ||
 				args.method === 'evm_sendRawTransactionSyncAs') &&
-			miningConfig.type === 'auto'
+				miningConfig.type === 'auto') ||
+			// The mining cheats mine under every mining config, as `node.mine()`
+			// does, so they persist like `mine()` does.
+			args.method === 'evm_mine' ||
+			args.method === 'anvil_mine' ||
+			args.method === 'hardhat_mine'
 		) {
 			await persistIfNeeded();
 		}

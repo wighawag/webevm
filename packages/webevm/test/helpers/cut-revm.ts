@@ -110,6 +110,8 @@
  *                      (helpers/genesis-timestamp.ts): block 0's pinned timestamp
  *                      is what `TIMESTAMP` reads with revm executing, and the
  *                      same chain in different seconds dumps byte-identically
+ *   - 'block-clock' : the SHARED block-clock battery (helpers/block-clock.ts):
+ *                      the time cheats stamp the block revm executes in
  */
 import type {
 	CodeUnderTest,
@@ -135,6 +137,7 @@ import {runRevmHistoricalCall} from './revm-historical-call.js';
 import {runRevmStateHistoryPersistence} from './revm-state-history-persistence.js';
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {runGenesisTimestampChecks} from './genesis-timestamp.js';
+import {runBlockClockChecks} from './block-clock.js';
 import {createRevmEngine} from '../../src/revm.js';
 import {runTrieDerivedChecks} from './trie-derived.js';
 import {runStorageCollisionChecks} from './storage-collision.js';
@@ -391,7 +394,8 @@ const cut: CodeUnderTest = {
 			ctx.params.mode === 'trie-derived' ||
 			ctx.params.mode === 'storage-collision' ||
 			ctx.params.mode === 'statetest' ||
-			ctx.params.mode === 'genesis-timestamp'
+			ctx.params.mode === 'genesis-timestamp' ||
+			ctx.params.mode === 'block-clock'
 		) {
 			try {
 				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
@@ -402,6 +406,8 @@ const cut: CodeUnderTest = {
 					results.revmStorageCollision = await runStorageCollisionChecks({
 						makeEngine,
 					});
+				else if (ctx.params.mode === 'block-clock')
+					results.revmBlockClock = await runBlockClockChecks({makeEngine});
 				else if (ctx.params.mode === 'genesis-timestamp')
 					results.revmGenesisTimestamp = await runGenesisTimestampChecks({
 						makeEngine,
