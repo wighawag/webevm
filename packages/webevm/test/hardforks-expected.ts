@@ -68,10 +68,11 @@ export function assertHardforks(c: Record<string, any>, label: string) {
 			refused: `-32000: transaction gas limit too high (cap: ${CAP}, tx: ${CAP + 1n})`,
 		},
 		atCap: mined('21000'),
-		// 20,000,000 of execution budget plus the 21000 intrinsic.
-		callOverCap: `threw -32000: transaction gas limit too high (cap: ${CAP}, tx: 20021000)`,
-		// the default read budget fits under the cap: the read's TOTAL is the cap.
-		defaultBudget: String(CAP - 21_000n),
+		// A READ is not held to the cap, as on geth: 20,000,000 of execution budget
+		// runs, and the default budget is the same 30,000,000 as on every fork. The
+		// revm engine lifts the cap on its reads (`disableTxGasLimitCap`).
+		callOverCap: '0x',
+		defaultBudget: '30000000',
 		estimateCeiling: expect.stringContaining(
 			`threw -32000: gas required exceeds allowance (${CAP})`,
 		),

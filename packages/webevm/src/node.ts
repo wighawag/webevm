@@ -2411,8 +2411,8 @@ export async function createNodeWithInternals(
 		// A caller who wants a bigger budget passes `gas` on the call itself, which is
 		// the standard `eth_call` field for exactly this and needs no configuration.
 		//
-		// FROM OSAKA ON THE DEFAULT IS SMALLER, and that is the fork's rule rather than
-		// a second knob: see the admission below.
+		// THE SAME ON EVERY FORK, Osaka included: EIP-7825's cap is a rule about
+		// transactions, and geth's `eth_call` skips it too (see the refusal below).
 		//
 		// `budget` OVERRIDES BOTH, and exactly one caller passes it: the
 		// `estimateGas` search below, which is asking a different question from
@@ -2421,20 +2421,12 @@ export async function createNodeWithInternals(
 		// intrinsic cost the transaction pays first — so the search computes the
 		// budget itself and this function must not re-derive one from `params.gas`,
 		// which for `eth_estimateGas` is a CAP on the limit rather than a budget.
-		const intrinsic = intrinsicGasOf(data, to === undefined, common);
-		const cap = transactionGasLimitCap(common);
 		const gasLimit =
-			budget ??
-			(params.gas
-				? BigInt(params.gas)
-				: cap !== undefined && cap - intrinsic < DEFAULT_READ_BUDGET
-					? // Never negative: calldata whose intrinsic gas alone exceeds the cap
-						// gets a zero budget, and the admission below refuses its total.
-						cap > intrinsic
-						? cap - intrinsic
-						: 0n
-					: DEFAULT_READ_BUDGET);
-		refuseUnadmissibleRead(gasLimit + intrinsic, data, cap);
+			budget ?? (params.gas ? BigInt(params.gas) : DEFAULT_READ_BUDGET);
+		refuseReadBelowTheFloor(
+			gasLimit + intrinsicGasOf(data, to === undefined, common),
+			data,
+		);
 		return engine.call({
 			from,
 			to,
@@ -2576,43 +2568,31 @@ export async function createNodeWithInternals(
 	}
 
 	/**
-	 * THE READ IS A VALID TRANSACTION, GAS-WISE, UNDER THIS FORK, or it is refused
-	 * here, in geth's words, before any engine sees it.
+	 * A READ BELOW EIP-7623's CALLDATA FLOOR (Prague on) IS REFUSED here, in geth's
+	 * words, before any engine sees it.
 	 *
 	 * `total` is what the read would carry as a transaction's gas limit: the
 	 * execution budget plus the intrinsic gas an engine that charges it (revm)
-	 * adds back. From Prague on it must reach EIP-7623's calldata floor, and from
-	 * Osaka on it may not exceed EIP-7825's cap. revm ENFORCES both on a read
-	 * (`GasFloorMoreThanGasLimit`, `TxGasLimitGreaterThanCap`) and `runCall` on the
-	 * default engine enforces neither, so without this the same read would run on
-	 * one engine and be refused on the other. The node therefore answers it for
-	 * both, which is the same move it makes for a transaction's validity
-	 * (`refuseIfBelowIntrinsicGas` and friends), and the reason the floor and the
-	 * cap never cross the engine seam: see
+	 * adds back. revm ENFORCES the floor on a read (`GasFloorMoreThanGasLimit`)
+	 * and `runCall` on the default engine does not, so without this the same read
+	 * would run on one engine and be refused on the other. geth refuses it too
+	 * (`insufficient gas for floor data gas cost`, also for `eth_call`). The node
+	 * therefore answers it for both, the same move it makes for a transaction's
+	 * validity (`refuseIfBelowIntrinsicGas` and friends), and the reason the floor
+	 * never crosses the engine seam: see
 	 * `docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md`.
 	 *
-	 * STRICTER THAN GETH ON ONE POINT, deliberately and identically on both
-	 * engines: geth lifts the cap for `eth_call`, and `revm-wasm` has no switch to
-	 * lift it, so a read above it is refused here rather than served by one engine
-	 * only. The default read budget is shrunk to fit under it instead (`evmCall`),
-	 * so only a caller who passes an explicit `gas` meets this.
+	 * EIP-7825's CAP IS DELIBERATELY NOT CHECKED HERE: geth skips it for
+	 * `eth_call`, `runCall` never enforced it, and the revm engine lifts it on its
+	 * reads (`disableTxGasLimitCap`, `revm-wasm@0.5.0`), so a read may run with the
+	 * node's default 30,000,000 budget or more on every fork. The cap binds what
+	 * the node ADMITS and RECOMMENDS: transactions at submit, and the upper bound
+	 * of the `eth_estimateGas` search.
 	 *
-	 * `eth_estimateGas` never trips it: its search only probes limits that satisfy
-	 * both bounds (see {@link estimateGas}).
+	 * `eth_estimateGas` never trips the floor: its search only probes limits at or
+	 * above it (see {@link estimateGas}).
 	 */
-	function refuseUnadmissibleRead(
-		total: bigint,
-		data: Uint8Array,
-		cap: bigint | undefined,
-	): void {
-		if (cap !== undefined && total > cap)
-			throw new RpcError(
-				-32000,
-				`transaction gas limit too high (cap: ${cap}, tx: ${total}). ` +
-					`From Osaka on, EIP-7825 caps a single transaction's gas limit at ${cap}, and this node holds a read to the same cap on every engine ` +
-					`(the figure is the call's gas plus the intrinsic gas a transaction with its calldata pays). ` +
-					`Pass a smaller \`gas\`, or omit it: the default budget fits under the cap.`,
-			);
+	function refuseReadBelowTheFloor(total: bigint, data: Uint8Array): void {
 		const floor = calldataFloorGas(data, common);
 		if (total < floor)
 			throw new RpcError(

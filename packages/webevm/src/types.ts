@@ -471,8 +471,8 @@ export interface NodeOptions {
 	 *
 	 * - `'osaka'` (DEFAULT): Prague's rules plus EIP-7825's per-transaction gas
 	 *   cap of 16,777,216 (a transaction asking for more is refused at submit, and
-	 *   `eth_call` / `eth_estimateGas` never run above it), the `CLZ` opcode, the
-	 *   secp256r1 precompile and the repriced `MODEXP`.
+	 *   `eth_estimateGas` never recommends more; `eth_call` is not held to it, as on
+	 *   geth), the `CLZ` opcode, the secp256r1 precompile and the repriced `MODEXP`.
 	 * - `'prague'`: EIP-7702 authorization lists (type-4 transactions), EIP-7623's
 	 *   calldata floor (charged on receipts, refused below at submit, and the
 	 *   least `eth_estimateGas` recommends) and the BLS12-381 precompiles.

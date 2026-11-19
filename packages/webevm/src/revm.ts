@@ -356,6 +356,18 @@ export async function createRevmEngine(
 				//                       transaction being MINED (`transact` below, and
 				//                       `refuseIfOverBlockGasLimit` in ./node.ts ahead of
 				//                       it), and a read is not mined;
+				//  disableTxGasLimitCap EIP-7825 (Osaka on) caps a TRANSACTION's gas limit
+				//                       at 16,777,216, and revm applies it to every
+				//                       execution. A read is not a transaction: geth skips
+				//                       the cap for `eth_call` (and keeps it for
+				//                       `eth_estimateGas`, which the node caps itself), and
+				//                       `@ethereumjs/evm`'s `runCall` never enforced it, so
+				//                       without this the node's default 30,000,000 budget
+				//                       is refused here and runs on the default engine. It
+				//                       lifts ONLY the cap: EIP-7623's calldata floor is
+				//                       still enforced, which is why the node refuses a
+				//                       read below the floor itself (ADR 0015). Needs
+				//                       `revm-wasm@0.5.0`; a no-op before Osaka;
 				//  disableEip3607       EIP-3607 rejects a caller that holds code, which
 				//                       is a rule about SENDING a transaction. Simulating
 				//                       from a contract address is ordinary practice
@@ -396,6 +408,7 @@ export async function createRevmEngine(
 				// never a fabricated balance.
 				disableBaseFee: true,
 				disableBlockGasLimit: true,
+				disableTxGasLimitCap: true,
 				disableEip3607: true,
 				// Logs and the post-state map are not part of a read's answer, and
 				// building them costs ~0.9 microseconds per call.
@@ -524,7 +537,8 @@ export async function createRevmEngine(
 				// changes are all part of a transaction's answer, and `returnState:false`
 				// cannot be combined with committing anyway), and above all NONE of the
 				// read path's simulation switches: `disableBaseFee`,
-				// `disableBlockGasLimit`, `disableEip3607` and `disableBalanceCheck` each
+				// `disableBlockGasLimit`, `disableTxGasLimitCap`, `disableEip3607` and
+				// `disableBalanceCheck` each
 				// relax a transaction's VALIDITY, and a transaction that runs with them
 				// relaxed is not a transaction. `revm-wasm` refuses to combine them with
 				// committing, so copying the read path's options object here would throw

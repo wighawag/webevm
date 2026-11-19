@@ -63,8 +63,8 @@
  * ({@link authorizationListGas}) is paid only by a transaction that carries an
  * authorization list, which a read request never does. So they sit BESIDE this
  * formula and are applied by the node alone, above the engine seam: the node
- * never hands an engine a read whose total is below the floor or above the cap,
- * and the one number an engine needs, this one, is unchanged. Moving intrinsic gas
+ * never hands an engine a read whose total is below the floor, and the one number
+ * an engine needs, this one, is unchanged. Moving intrinsic gas
  * onto the seam's read request instead was evaluated and rejected; see
  * `docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md`.
  * AT AMSTERDAM the formula stops being true (EIP-8037 splits intrinsic gas into
@@ -160,9 +160,10 @@ const MAX_TRANSACTION_GAS_LIMIT = 16_777_216n;
  * every party (`@ethereumjs/tx` at construction, revm with
  * `TxGasLimitGreaterThanCap`, geth with `transaction gas limit too high`); it is
  * never trimmed. The node applies it to what it ADMITS and RECOMMENDS: a
- * transaction above it is refused at submit, `eth_estimateGas` never searches
- * above it, and a read is never handed to an engine above it (see ADR 0015 for
- * why that last one is stricter than geth's `eth_call`).
+ * transaction above it is refused at submit, and `eth_estimateGas` never searches
+ * above it. A READ is not held to it, as geth's `eth_call` is not: the default
+ * engine's `runCall` never enforced it, and the revm engine lifts it on its reads
+ * (`disableTxGasLimitCap`).
  */
 export function transactionGasLimitCap(common: Common): bigint | undefined {
 	return common.isActivatedEIP(7825) ? MAX_TRANSACTION_GAS_LIMIT : undefined;

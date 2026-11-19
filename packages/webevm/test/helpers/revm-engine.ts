@@ -111,7 +111,7 @@ import {SimpleStateManagerStore} from '../../src/revm-state-store.js';
 // The REAL shared formula, not a restatement of it: what this file measures is
 // whether the node's own arithmetic gates EIP-3860 by fork, so a mirror would
 // only measure the mirror. See ../../src/intrinsic-gas.ts.
-import {intrinsicGas, transactionGasLimitCap} from '../../src/intrinsic-gas.js';
+import {intrinsicGas} from '../../src/intrinsic-gas.js';
 import {createEthereumjsEngine} from '../../src/engine.js';
 import type {Engine, NodeHardfork} from '../../src/index.js';
 import {Common, Mainnet} from '@ethereumjs/common';
@@ -1316,9 +1316,10 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	// user-visible failure ("out of gas" in their face) caught one layer earlier.
 	//
 	// THE ESTIMATE AND THE BUDGET ARE THE NODE'S AT THAT FORK, taken from a real
-	// node created with that `hardfork`, on each engine, because they are fork
-	// dependent from Prague on (EIP-7623's floor raises the estimate, EIP-7825's cap
-	// shrinks the read budget). A fork the node does not offer (berlin..shanghai) is
+	// node created with that `hardfork`, on each engine, because the estimate is
+	// fork dependent from Prague on (EIP-7623's floor raises it). The budget is
+	// not (geth's `eth_call` ignores EIP-7825's cap, and so does the node), and
+	// that is measured too. A fork the node does not offer (berlin..shanghai) is
 	// judged with the Cancun node's figures, which is exact there: the shared
 	// formula's CALL terms are the same at every admitted fork from Istanbul on, and
 	// neither rule exists before Prague.
@@ -1405,7 +1406,12 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 		wasm: sharedModule,
 		state: new MemoryStore(),
 	});
-	function verdict(spec: SpecName, gasLimit: bigint): string {
+	/**
+	 * `liftCap` mirrors the engine's own read options, which carry
+	 * `disableTxGasLimitCap` (src/revm.ts); `false` is the counter-example that
+	 * shows the switch is what lets the node's default budget run on Osaka.
+	 */
+	function verdict(spec: SpecName, gasLimit: bigint, liftCap = true): string {
 		const o = judge.call({
 			from: hexToBytes(account.address),
 			to: hexToBytes(CALLDATA_SINK_ADDR),
@@ -1424,6 +1430,7 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 			},
 			disableBaseFee: true,
 			disableBlockGasLimit: true,
+			disableTxGasLimitCap: liftCap,
 			disableEip3607: true,
 			returnState: false,
 		});
@@ -1451,15 +1458,20 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	out.budgetVerdicts = budgetVerdicts;
 
 	// And the counter-examples, so the per-fork figures are evidence-backed rather
-	// than asserted: CANCUN's estimate (no floor) and CANCUN's budget (no cap) are
-	// rejected outright by revm on the two forks that brought those rules. That is
-	// what the node got wrong before it applied them, and what admitting Prague and
-	// Osaka on the Cancun figures would reintroduce.
+	// than asserted. CANCUN's estimate (no floor) is rejected outright by revm on
+	// Prague: that is what the node got wrong before it applied the floor. And the
+	// node's Osaka read budget is rejected on Osaka WITHOUT `disableTxGasLimitCap`
+	// (`TxGasLimitGreaterThanCap`): the switch, not luck, is what lets an ordinary
+	// `eth_call` run there.
 	out.cancunEstimateOnPrague = verdict(
 		'PRAGUE',
 		BigInt(heavyEstimatesByFork.cancun.revm),
 	);
-	out.cancunBudgetOnOsaka = verdict('OSAKA', revmLimitOf('cancun'));
+	out.osakaBudgetWithoutTheSwitch = verdict(
+		'OSAKA',
+		revmLimitOf('osaka'),
+		false,
+	);
 
 	// ---------- ...and judged by the PROTOCOL, not just by revm ----------
 	// The node and revm agree about intrinsic gas BY CONSTRUCTION: the engine
@@ -1776,19 +1788,12 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 			},
 			{common},
 		);
-		// The budget the node's `evmCall` gives a read that names no `gas`: 30M, or,
-		// under EIP-7825's cap (Osaka), the cap less the read's intrinsic gas.
-		const cap = transactionGasLimitCap(common);
-		const createIntrinsicGas = intrinsicGas(CREATE_INITCODE, true, common);
 		const request = {
 			from: createAddressFromString(account.address),
 			to: undefined,
 			data: CREATE_INITCODE,
 			value: 0n,
-			gasLimit:
-				cap !== undefined && cap - createIntrinsicGas < 30_000_000n
-					? cap - createIntrinsicGas
-					: 30_000_000n,
+			gasLimit: 30_000_000n,
 			block,
 		};
 		// Each engine on its OWN empty state, because a CREATE derives its address
@@ -1871,8 +1876,8 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	// properties are invisible in a receipt:
 	//
 	//   * the transaction path must carry NONE of the read path's simulation
-	//     switches (`disableBaseFee` / `disableBlockGasLimit` / `disableEip3607` /
-	//     `disableBalanceCheck`). `revm-wasm` REFUSES to combine any of them with
+	//     switches (`disableBaseFee` / `disableBlockGasLimit` /
+	//     `disableTxGasLimitCap` / `disableEip3607` / `disableBalanceCheck`). `revm-wasm` REFUSES to combine any of them with
 	//     committing, so a builder who copied the read path's options object
 	//     would get a throw — but one who copied them onto a `commit:false`
 	//     simulation would silently execute a transaction with relaxed VALIDITY,
@@ -1989,6 +1994,7 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 					'disableBaseFee',
 					'disableBalanceCheck',
 					'disableBlockGasLimit',
+					'disableTxGasLimitCap',
 					'disableEip3607',
 				] as const
 			).filter((k) => seen[0]?.[k] !== undefined);

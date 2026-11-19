@@ -11,9 +11,10 @@
  *     words, one at the estimate is mined and its receipt charges the floor, and
  *     an `eth_call` whose gas cannot reach the floor is refused too.
  *   - `cap`: EIP-7825 (Osaka on). A transaction one gas above 2^24 is REFUSED,
- *     one at exactly 2^24 is mined, an `eth_call` asking for more is refused, the
- *     DEFAULT read budget shrinks to fit (read through `GAS`, which is what a
- *     contract sees), and `eth_estimateGas` never searches above the cap.
+ *     one at exactly 2^24 is mined, and `eth_estimateGas` never searches above
+ *     the cap. A READ is not held to it, as on geth: an `eth_call` asking for more
+ *     runs, and the DEFAULT read budget (read through `GAS`, which is what a
+ *     contract sees) is 30,000,000 on every fork.
  *   - `setCode`: EIP-7702 (Prague on). A type-4 transaction delegating an EOA to
  *     a contract, sponsored by another account: `eth_estimateGas` with the
  *     `authorizationList` executes the DELEGATED code (without it the same

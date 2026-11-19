@@ -319,12 +319,13 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 	expect(BigInt(c.heavyEstimatesByFork.prague.revm)).toBe(
 		21_000n + 10n * 4000n,
 	);
-	// ...the default read budget is 30M until Osaka, and the EIP-7825 cap less the
-	// read's intrinsic gas from Osaka on, so the read's TOTAL is exactly the cap...
+	// ...the default read budget is 30M on every fork, Osaka included: geth's
+	// `eth_call` ignores EIP-7825's cap and so does the node, on both engines
+	// (the revm engine passes `disableTxGasLimitCap`)...
 	expect(c.readBudgetByFork).toEqual({
 		cancun: '30000000',
 		prague: '30000000',
-		osaka: String(16_777_216n - (21_000n + 1000n * 16n)),
+		osaka: '30000000',
 	});
 	// ...and an ordinary `eth_call` RUNS on revm on every fork the node offers,
 	// which on Osaka is the failure the cap used to cause on every read.
@@ -341,10 +342,11 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 			`${hardfork}: accepted`,
 		);
 	}
-	// ...and the fork rules are load-bearing: the CANCUN figures, which ignore
-	// both, are rejected by revm on the two forks that brought them.
+	// ...and both are load-bearing: CANCUN's estimate, which ignores the floor,
+	// is rejected by revm on Prague, and the Osaka read budget is rejected on
+	// Osaka by revm WITHOUT the engine's `disableTxGasLimitCap`.
 	expect(c.cancunEstimateOnPrague).toContain('GasFloorMoreThanGasLimit');
-	expect(c.cancunBudgetOnOsaka).toContain('TxGasLimitGreaterThanCap');
+	expect(c.osakaBudgetWithoutTheSwitch).toContain('TxGasLimitGreaterThanCap');
 
 	// AND THE PROTOCOL GETS A VOTE, because the node and revm agree about
 	// intrinsic gas by construction (the engine subtracts what the node adds), so

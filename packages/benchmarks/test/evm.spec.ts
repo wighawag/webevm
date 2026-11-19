@@ -109,7 +109,7 @@ const collected: Record<string, unknown>[] = [];
  *
  * RE-PINNED TWENTY-FOUR TIMES SINCE. Most recent first:
  *
- * 442.7 -> 448.5 KB raw / 133.4 -> 135.3 KB gzip, by
+ * 442.7 -> 448.1 KB raw / 133.4 -> 135.2 KB gzip, by
  * `readmit-refused-hardforks-once-the-node-can-cost-them`: the node runs Prague
  * and Osaka (`NodeOptions.hardfork`) and applies their gas rules itself, above
  * the engine seam, so the code is in `src/node.ts` and `src/intrinsic-gas.ts`:
@@ -121,7 +121,8 @@ const collected: Record<string, unknown>[] = [];
  * dump records and `loadState` checks. `@ethereumjs/rlp` and the EIP-7702 helpers
  * of `@ethereumjs/util` were already in the graph through `@ethereumjs/tx`. In
  * the CORE graph because every node runs a fork, and the default one is now
- * Osaka. Still zero bytes of `revm-wasm`.
+ * Osaka. (The same change also moved `revm-wasm` to ^0.5.0, which adds nothing
+ * here.) Still zero bytes of `revm-wasm`.
  *
  * 442.6 -> 442.7 KB raw / 133.4 KB gzip (unchanged), by
  * `logs-carry-their-blocks-timestamp`: every RPC log carries `blockTimestamp`
@@ -458,7 +459,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 448.5, gzipKB: 135.3};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 448.1, gzipKB: 135.2};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
