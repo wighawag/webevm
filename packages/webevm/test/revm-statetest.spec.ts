@@ -67,7 +67,7 @@ test('slim-node computeStateRoot with the revm engine passes real ethereum/tests
 	for (const c of s.cases) {
 		const tag = c.rootMatch && c.logsMatch && !c.error ? 'OK ' : 'XX ';
 		console.log(
-			`  ${tag}${c.test} case#${c.caseIndex} d/g/v=${c.indexes.data}/${c.indexes.gas}/${c.indexes.value} ` +
+			`  ${tag}${c.fork} ${c.test} case#${c.caseIndex} d/g/v=${c.indexes.data}/${c.indexes.gas}/${c.indexes.value} ` +
 				`root=${c.rootMatch} logs=${c.logsMatch} status=${c.txStatus}` +
 				(c.error ? ` ERROR=${c.error}` : '') +
 				(!c.rootMatch
@@ -79,8 +79,11 @@ test('slim-node computeStateRoot with the revm engine passes real ethereum/tests
 	expect(r.errors).toEqual([]);
 	// Every case ran on revm (one engine per node, no fallback).
 	expect(s.engines).toEqual(['revm-wasm']);
-	// Every vendored fixture must have produced at least some Cancun cases.
+	// Every vendored fixture must have produced at least some cases.
 	expect(s.total).toBeGreaterThanOrEqual(FIXTURE_FILES.length);
+	// ...on BOTH forks the fixtures and the node share, each on a node created
+	// with that hardfork, so Prague's rules are judged by the reference roots too.
+	expect(s.forks).toEqual(['Cancun', 'Prague']);
 	// And every case's post-state root + logs hash must match the fixture.
 	expect(s.failed).toBe(0);
 	expect(s.passed).toBe(s.total);

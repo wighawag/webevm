@@ -726,8 +726,9 @@ export async function runStorageOverlayChecks(): Promise<
 		);
 		out.fixtureStorage = JSON.stringify(fixture.storage);
 
-		// ...and a state dumped by the PREVIOUS version loads into this one.
-		const fresh = await createNode({chainId: CHAIN_ID});
+		// ...and a state dumped by the PREVIOUS version loads into this one, on the
+		// fork that version ran (an unlabelled dump is a Cancun dump).
+		const fresh = await createNode({chainId: CHAIN_ID, hardfork: 'cancun'});
 		await fresh.loadState(fixture);
 		const reread = async (address: string, slotHex: string) =>
 			String(

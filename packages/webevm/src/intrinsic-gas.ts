@@ -48,19 +48,28 @@
  * Shanghai, which is precisely the drift this file exists to prevent. See
  * `docs/adr/0008-the-revm-engine-admits-only-hardforks-it-can-cost.md`.
  *
- * THE FORK RANGE THIS FORMULA IS TRUE FOR IS ISTANBUL..CANCUN, AND IT HAS AN END
- * AT BOTH SIDES. The node runs Cancun; `webevm/revm` admits
- * Berlin..Cancun, which sits strictly inside that range. Every term above is
- * measured against the protocol at every admitted fork by the clause-(b)
- * assertions in `test/revm-engine.spec.ts`; the two ends are where the formula
- * stops being true, so they are what anyone moving the node's hardfork owes.
+ * THE FORK RANGE THIS FORMULA IS TRUE FOR IS ISTANBUL..OSAKA, AND IT HAS AN END
+ * AT BOTH SIDES. The node runs Cancun, Prague or Osaka (`NodeOptions.hardfork`);
+ * `webevm/revm` admits Berlin..Osaka, which sits strictly inside that range.
+ * Every term above is measured against the protocol at every admitted fork by the
+ * clause-(b) assertions in `test/revm-engine.spec.ts`; the two ends are where the
+ * formula stops being true, so they are what anyone moving the node's hardfork
+ * owes.
  *
- * ABOVE, AT PRAGUE: EIP-7623's calldata floor (a transaction pays at least
- * `21000 + 10` gas per calldata token) is missing here and is DELIBERATELY not
- * added: it is not a term of this formula but a floor on the transaction's TOTAL
- * gas, so it cannot be added without both callers also learning about it. Rather
- * than cost a fork half-correctly, the engine refuses Prague and Osaka BY NAME
- * (`REVM_REFUSED_HARDFORKS` in ./revm.ts).
+ * FROM PRAGUE ON, THREE MORE RULES, AND NONE OF THEM IS A TERM OF THIS FORMULA.
+ * EIP-7623's calldata floor ({@link calldataFloorGas}) bounds a transaction's
+ * TOTAL from below, EIP-7825's cap ({@link transactionGasLimitCap}, Osaka) bounds
+ * its gas LIMIT from above, and EIP-7702's per-authorization charge
+ * ({@link authorizationListGas}) is paid only by a transaction that carries an
+ * authorization list, which a read request never does. So they sit BESIDE this
+ * formula and are applied by the node alone, above the engine seam: the node
+ * never hands an engine a read whose total is below the floor, and the one number
+ * an engine needs, this one, is unchanged. Moving intrinsic gas
+ * onto the seam's read request instead was evaluated and rejected; see
+ * `docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md`.
+ * AT AMSTERDAM the formula stops being true (EIP-8037 splits intrinsic gas into
+ * two dimensions, EIP-7976 re-prices calldata tokens), which is why that fork is
+ * refused by name.
  *
  * BELOW, AT ISTANBUL: the 16 above is EIP-2028's, which shipped in Istanbul, and
  * it is hardcoded here rather than gated. Before Istanbul a non-zero calldata
@@ -70,7 +79,8 @@
  * The term is NOT fork-gated on purpose: no admitted fork predates Istanbul and
  * none can, because a fork in neither of ./revm.ts's two tables is refused by the
  * "no revm spec is known" guard, so a gate would be arithmetic nothing can reach
- * (the same argument that keeps the EIP-7623 floor out). What stands in its place
+ * (the argument that once kept the EIP-7623 floor out, before a hardfork option
+ * made it reachable). What stands in its place
  * is a measurement rather than a comment: the suite measures this term either
  * side of the Istanbul boundary (`petersburg` and `istanbul`), so re-admitting a
  * pre-Istanbul fork turns that measured disagreement into a failing build. If one
@@ -113,6 +123,74 @@ export function intrinsicGas(
 		}
 	}
 	return gas;
+}
+
+/** EIP-7623: what one calldata TOKEN costs under the floor. */
+const TOTAL_COST_FLOOR_PER_TOKEN = 10n;
+
+/**
+ * EIP-7623 (Prague): THE LEAST A TRANSACTION WITH THIS CALLDATA PAYS, whatever it
+ * executes: `21000 + 10 * tokens`, a zero byte being one token and a non-zero byte
+ * four. `0n` on a fork without EIP-7623, so a caller can take `max(.., floor)`
+ * unconditionally.
+ *
+ * A FLOOR ON THE TOTAL, NOT A TERM. A transaction is charged
+ * `max(intrinsic + execution - refund, floor)`, and its gas LIMIT must be at
+ * least the floor before it may start (`INTRINSIC_GAS_TOO_LOW` on
+ * `@ethereumjs/vm`, `GasFloorMoreThanGasLimit` on revm,
+ * `insufficient gas for floor data gas cost` on geth). The access list does not
+ * enter it at Prague or Osaka (EIP-7981, which adds it, is Amsterdam's).
+ *
+ * Gated on the node's `Common` by `isActivatedEIP(7623)`, for the reason the
+ * EIP-3860 term above is: that is the table `runTx` consults when it applies the
+ * same floor to a mined transaction.
+ */
+export function calldataFloorGas(data: Uint8Array, common: Common): bigint {
+	if (!common.isActivatedEIP(7623)) return 0n;
+	let tokens = 0n;
+	for (const b of data) tokens += b === 0 ? 1n : 4n;
+	return 21_000n + TOTAL_COST_FLOOR_PER_TOKEN * tokens;
+}
+
+/** EIP-7825 (Osaka): the largest gas limit a single transaction may carry. */
+const MAX_TRANSACTION_GAS_LIMIT = 16_777_216n;
+
+/**
+ * EIP-7825 (Osaka): THE LARGEST GAS LIMIT ONE TRANSACTION MAY CARRY, 2^24, or
+ * `undefined` on a fork without the cap. A limit above it is refused outright by
+ * every party (`@ethereumjs/tx` at construction, revm with
+ * `TxGasLimitGreaterThanCap`, geth with `transaction gas limit too high`); it is
+ * never trimmed. The node applies it to what it ADMITS and RECOMMENDS: a
+ * transaction above it is refused at submit, and `eth_estimateGas` never searches
+ * above it. A READ is not held to it, as geth's `eth_call` is not: the default
+ * engine's `runCall` never enforced it, and the revm engine lifts it on its reads
+ * (`disableTxGasLimitCap`).
+ */
+export function transactionGasLimitCap(common: Common): bigint | undefined {
+	return common.isActivatedEIP(7825) ? MAX_TRANSACTION_GAS_LIMIT : undefined;
+}
+
+/** EIP-7702: what one authorization costs up front (`PER_EMPTY_ACCOUNT_COST`). */
+const PER_AUTHORIZATION_COST = 25_000n;
+
+/**
+ * WHAT AN `eth_estimateGas` REQUEST'S EIP-7702 AUTHORIZATION LIST COSTS UP FRONT:
+ * 25,000 per entry, the charge a type-4 transaction pays before its first opcode
+ * (`@ethereumjs/tx`'s `getIntrinsicGas()` includes it, which is the floor the
+ * node refuses a submitted transaction against). The 12,500 refunded for an
+ * authority that already exists is NOT subtracted: the estimate over-states by
+ * that much, which is the safe direction for a number a client uses as a gas
+ * limit.
+ *
+ * Beside {@link intrinsicGas} rather than inside it for the reason
+ * {@link accessListGas} is: the engine seam's read request carries no
+ * authorization list, so a term in the shared formula would be subtracted by the
+ * revm engine from a figure that never contained it. `0n` for anything that is
+ * not an array, so an untyped request cannot make an estimate throw here.
+ */
+export function authorizationListGas(authorizationList: unknown): bigint {
+	if (!Array.isArray(authorizationList)) return 0n;
+	return BigInt(authorizationList.length) * PER_AUTHORIZATION_COST;
 }
 
 /** EIP-2930: what one access-list entry's ADDRESS costs, up front. */

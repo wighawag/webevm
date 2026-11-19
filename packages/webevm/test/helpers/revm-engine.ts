@@ -113,7 +113,7 @@ import {SimpleStateManagerStore} from '../../src/revm-state-store.js';
 // only measure the mirror. See ../../src/intrinsic-gas.ts.
 import {intrinsicGas} from '../../src/intrinsic-gas.js';
 import {createEthereumjsEngine} from '../../src/engine.js';
-import type {Engine} from '../../src/index.js';
+import type {Engine, NodeHardfork} from '../../src/index.js';
 import {Common, Mainnet} from '@ethereumjs/common';
 // The node's OWN 'none'-mode state manager, not a stock `SimpleStateManager`: the
 // revm store reads storage through its per-account OVERLAY representation and
@@ -226,7 +226,15 @@ async function nodePinnedCommon(): Promise<Common> {
 			);
 		},
 	};
-	const probeNode = await createNode({chainId: CHAIN_ID, engine: forkProbe});
+	// THE OPTIONS OF THE NODES UNDER TEST, not a bare `createNode()`: since the
+	// node grew a `hardfork` option, a probe built with none would report the fork
+	// `createNode()` DEFAULTS to, which is the node under test's only by
+	// coincidence. Sharing {@link NODE_UNDER_TEST_OPTIONS} with {@link nodeWith}
+	// makes the two one statement, so a fork set there moves the probe with it.
+	const probeNode = await createNode({
+		...NODE_UNDER_TEST_OPTIONS,
+		engine: forkProbe,
+	});
 	await probeNode.dispose();
 	if (captured === undefined)
 		throw new Error(
@@ -267,6 +275,17 @@ const commonOn = (hardfork: string) =>
 		chain: {...Mainnet, chainId: CHAIN_ID, name: 'webevm'},
 		hardfork,
 	});
+
+/**
+ * The forks `createNode()` offers (`NodeHardfork`), each of which every
+ * section that builds a node per fork runs on. `test/hardforks.spec.ts` holds
+ * the option to exactly this list, so it cannot drift from the node's.
+ */
+const NODE_HARDFORKS = [
+	'cancun',
+	'prague',
+	'osaka',
+] as const satisfies readonly NodeHardfork[];
 
 /**
  * Runtime bytecode returning `blockhash(number - 1)`.
@@ -359,11 +378,22 @@ async function errorDataOf(
 	}
 }
 
+/**
+ * What every node under test here is built with ({@link nodeWith}), and what the
+ * fork probe ({@link nodePinnedCommon}) is built with too, so the probe reads the
+ * fork of the nodes it mirrors rather than the default one. No `hardfork`: these
+ * nodes run the node's DEFAULT fork, which is what a consumer who passes none
+ * gets, and the per-fork sections below build their own.
+ */
+const NODE_UNDER_TEST_OPTIONS = {
+	chainId: CHAIN_ID,
+	miningConfig: {type: 'auto'},
+	initialBalances: {[account.address]: FUNDED_BALANCE},
+} as const;
+
 async function nodeWith(engine?: Engine, extra: Record<string, unknown> = {}) {
 	const node = await createNode({
-		chainId: CHAIN_ID,
-		miningConfig: {type: 'auto'},
-		initialBalances: {[account.address]: FUNDED_BALANCE},
+		...NODE_UNDER_TEST_OPTIONS,
 		engine,
 		...extra,
 	});
@@ -873,7 +903,9 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 			to: createAddressFromString(VALUE_SINK_ADDR),
 			data: new Uint8Array(),
 			value,
-			gasLimit: 30_000_000n,
+			// A budget every fork admits (Osaka caps a transaction at 16,777,216 and
+			// revm refuses a read above it); the budget is not what this measures.
+			gasLimit: 1_000_000n,
 			block: createBlock(
 				{
 					header: {
@@ -1167,7 +1199,7 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 			to: createAddressFromString(CALLDATA_SINK_ADDR),
 			data: new Uint8Array(),
 			value: 0n,
-			gasLimit: 30_000_000n,
+			gasLimit: 1_000_000n,
 			block: createBlock(
 				{
 					header: {
@@ -1186,9 +1218,11 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	}
 
 	// ---------- the hardforks this engine ADMITS, and the ones it REFUSES ----------
-	// The node runs Cancun and nothing a consumer can pass changes that, so this is
-	// the one place the guard is reachable: `connect` is handed a `Common` on each
-	// fork directly, exactly as a node whose hardfork had moved would hand it.
+	// `connect` is handed a `Common` on each fork directly, exactly as a node on
+	// that fork hands it. Every fork `createNode()` offers is admitted (asserted
+	// below), so the refusal is reachable only for a fork the node does not offer,
+	// which is the point: it fires the day the node offers one this engine has not
+	// been costed for.
 	const sharedModule = await WebAssembly.compile(bundlerResolvedWasm);
 	async function connectOn(hardfork: string): Promise<string> {
 		const engine = await createRevmEngine({wasm: sharedModule});
@@ -1209,31 +1243,37 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	}
 	out.hardforkRefusals = hardforkRefusals;
 	out.refusedHardforks = Object.keys(REVM_REFUSED_HARDFORKS);
-	// ...and the fork the node actually runs is still admitted, silently and
-	// without ceremony: the default path must be demonstrably untouched.
-	out.cancunAdmitted = (await connectOn('cancun')) === 'DID_NOT_THROW';
+	// ...and every fork the NODE offers is admitted, silently and without ceremony:
+	// a node on any of them can be given this engine.
+	const nodeForksAdmitted: Record<string, boolean> = {};
+	for (const hardfork of NODE_HARDFORKS)
+		nodeForksAdmitted[hardfork] =
+			(await connectOn(hardfork)) === 'DID_NOT_THROW';
+	out.nodeForksAdmitted = nodeForksAdmitted;
 
 	// ---------- and the tables cannot be EDITED from outside ----------
 	// `Readonly<Record<...>>` is a compile-time claim that is erased at runtime, so
 	// without `Object.freeze` the guard above could be removed by one assignment
-	// through the exported object — and a consumer who re-admitted `prague` that way
-	// would get an `eth_estimateGas` revm itself rejects. What is measured is the
-	// RUNTIME property, not the type: both tables report frozen, the two edits a
-	// re-admitter would make do not take, and the guard STILL refuses the fork
-	// afterwards, with the same words.
-	const pragueRefusalText = REVM_REFUSED_HARDFORKS.prague;
+	// through the exported object, and a consumer who re-admitted `amsterdam` that
+	// way would get an `eth_estimateGas` computed under Osaka's rules for a chain
+	// running Amsterdam's. What is measured is the RUNTIME property, not the type:
+	// both tables report frozen, the two edits a re-admitter would make do not
+	// take, and the guard STILL refuses the fork afterwards, with the same words.
+	const refusedFork = 'amsterdam';
+	const refusalText = REVM_REFUSED_HARDFORKS[refusedFork];
 	const tableEditOutcomes: Record<string, string> = {};
 	for (const [what, edit] of [
 		[
-			'admit prague',
+			`admit ${refusedFork}`,
 			() => {
-				(REVM_SPEC_BY_HARDFORK as Record<string, SpecName>).prague = 'PRAGUE';
+				(REVM_SPEC_BY_HARDFORK as Record<string, SpecName>)[refusedFork] =
+					'AMSTERDAM';
 			},
 		],
 		[
-			'drop the prague refusal',
+			`drop the ${refusedFork} refusal`,
 			() => {
-				delete (REVM_REFUSED_HARDFORKS as Record<string, string>).prague;
+				delete (REVM_REFUSED_HARDFORKS as Record<string, string>)[refusedFork];
 			},
 		],
 	] as const) {
@@ -1256,16 +1296,16 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 		Object.isFrozen(REVM_REFUSED_HARDFORKS);
 	out.admittedAfterEditAttempt = Object.keys(REVM_SPEC_BY_HARDFORK);
 	out.refusedAfterEditAttempt = Object.keys(REVM_REFUSED_HARDFORKS);
-	out.pragueRefusalAfterEditAttempt = await connectOn('prague');
+	out.refusalAfterEditAttempt = await connectOn(refusedFork);
 	// If either edit actually TOOK (i.e. the freeze regressed), put the tables back,
 	// so the rest of this run still measures the real ones and the regression is
 	// reported by the four readings above rather than as noise in every later
 	// assertion. On frozen tables both statements are no-ops (or throw, in strict
 	// mode) and nothing is restored because nothing moved.
 	try {
-		delete (REVM_SPEC_BY_HARDFORK as Record<string, SpecName>).prague;
-		(REVM_REFUSED_HARDFORKS as Record<string, string>).prague =
-			pragueRefusalText;
+		delete (REVM_SPEC_BY_HARDFORK as Record<string, SpecName>)[refusedFork];
+		(REVM_REFUSED_HARDFORKS as Record<string, string>)[refusedFork] =
+			refusalText;
 	} catch {}
 
 	// ---------- what the node hands the engine, judged BY the engine ----------
@@ -1274,6 +1314,19 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	// call is fed back to revm AS a gas limit, on every spec the table admits, and
 	// revm's own transaction validation gets to judge it. A rejection here is the
 	// user-visible failure ("out of gas" in their face) caught one layer earlier.
+	//
+	// THE ESTIMATE AND THE BUDGET ARE THE NODE'S AT THAT FORK, taken from a real
+	// node created with that `hardfork`, on each engine, because the estimate is
+	// fork dependent from Prague on (EIP-7623's floor raises it). The budget is
+	// not (geth's `eth_call` ignores EIP-7825's cap, and so does the node), and
+	// that is measured too. A fork the node does not offer (berlin..shanghai) is
+	// judged with the Cancun node's figures, which is exact there: the shared
+	// formula's CALL terms are the same at every admitted fork from Istanbul on, and
+	// neither rule exists before Prague.
+	//
+	// THE BUDGET IS MEASURED, NOT RESTATED: an engine wrapper records the
+	// `gasLimit` the node's `eth_call` (no `gas`) hands it, and revm is judged on
+	// that plus the intrinsic gas the revm engine adds back.
 	const heavyDataHex = ('0x' + 'ff'.repeat(1000)) as `0x${string}`;
 	const heavyData = hexToBytes(heavyDataHex);
 	const heavyCall = {
@@ -1281,17 +1334,68 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 		to: CALLDATA_SINK_ADDR,
 		data: heavyDataHex,
 	};
-	const heavyEstimates: Record<string, string> = {};
-	for (const [label, ctx] of [
-		['default', def],
-		['revm', revm],
-	] as const) {
-		heavyEstimates[label] = String(
-			await ctx.node.request({method: 'eth_estimateGas', params: [heavyCall]}),
-		);
+	const heavyEstimatesByFork: Record<string, {default: string; revm: string}> =
+		{};
+	const readBudgetByFork: Record<string, string> = {};
+	const heavyCallOnRevmByFork: Record<string, string> = {};
+	for (const hardfork of NODE_HARDFORKS) {
+		const estimates: Record<string, string> = {};
+		for (const label of ['default', 'revm'] as const) {
+			let budgetSeen: bigint | undefined;
+			const inner =
+				label === 'revm'
+					? await createRevmEngine({wasm: sharedModule})
+					: undefined;
+			const recording: Engine | undefined = inner && {
+				id: inner.id,
+				connect: (context) => inner.connect!(context),
+				call: (request) => {
+					budgetSeen ??= request.gasLimit;
+					return inner.call(request);
+				},
+				transact: (request) => inner.transact(request),
+			};
+			const forkNode = await createNode({
+				...NODE_UNDER_TEST_OPTIONS,
+				hardfork,
+				engine: recording,
+			});
+			// THE CALL FIRST, with no `gas`, so the budget recorded is the DEFAULT one,
+			// and it must RUN on revm: a refusal here is the Osaka failure mode
+			// (`TxGasLimitGreaterThanCap` on every ordinary read) seen end to end.
+			if (label === 'revm') {
+				try {
+					await forkNode.request({method: 'eth_call', params: [heavyCall]});
+					heavyCallOnRevmByFork[hardfork] = 'ran';
+				} catch (e) {
+					heavyCallOnRevmByFork[hardfork] = String((e as Error)?.message ?? e);
+				}
+				readBudgetByFork[hardfork] = String(budgetSeen);
+			}
+			estimates[label] = String(
+				await forkNode.request({
+					method: 'eth_estimateGas',
+					params: [heavyCall],
+				}),
+			);
+			await forkNode.dispose();
+		}
+		heavyEstimatesByFork[hardfork] = {
+			default: estimates.default,
+			revm: estimates.revm,
+		};
 	}
-	out.heavyEstimates = heavyEstimates;
-	out.heavyEstimatesMatch = heavyEstimates.default === heavyEstimates.revm;
+	out.heavyEstimatesByFork = heavyEstimatesByFork;
+	out.readBudgetByFork = readBudgetByFork;
+	out.heavyCallOnRevmByFork = heavyCallOnRevmByFork;
+	out.heavyEstimatesMatch = Object.values(heavyEstimatesByFork).every(
+		(e) => e.default === e.revm,
+	);
+	/** The node fork whose figures judge an admitted revm fork. */
+	const nodeForkFor = (hardfork: string): string =>
+		(NODE_HARDFORKS as readonly string[]).includes(hardfork)
+			? hardfork
+			: 'cancun';
 
 	// A SECOND revm instance, on its own empty state, because what is under test is
 	// revm's TRANSACTION VALIDATION (the EIP-7623 floor, the EIP-7825 cap), which
@@ -1302,7 +1406,12 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 		wasm: sharedModule,
 		state: new MemoryStore(),
 	});
-	function verdict(spec: SpecName, gasLimit: bigint): string {
+	/**
+	 * `liftCap` mirrors the engine's own read options, which carry
+	 * `disableTxGasLimitCap` (src/revm.ts); `false` is the counter-example that
+	 * shows the switch is what lets the node's default budget run on Osaka.
+	 */
+	function verdict(spec: SpecName, gasLimit: bigint, liftCap = true): string {
 		const o = judge.call({
 			from: hexToBytes(account.address),
 			to: hexToBytes(CALLDATA_SINK_ADDR),
@@ -1321,6 +1430,7 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 			},
 			disableBaseFee: true,
 			disableBlockGasLimit: true,
+			disableTxGasLimitCap: liftCap,
 			disableEip3607: true,
 			returnState: false,
 		});
@@ -1329,25 +1439,39 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 		// the failure an under-estimate produces.
 		return o.success ? 'accepted' : (o.error ?? o.status);
 	}
-	// The node's DEFAULT read budget, as the engine receives it: `eth_call` with no
-	// `gas` uses 30M, and the engine adds intrinsic gas on top (revm charges
-	// intrinsic out of the transaction limit, `runCall` charges none).
-	const defaultReadBudget = 30_000_000n + intrinsicGasForCall(heavyDataHex);
+	// The node's default read budget, AS REVM RECEIVES IT: what the node handed the
+	// engine (recorded above) plus the intrinsic gas the engine adds back.
+	const heavyIntrinsic = intrinsicGasForCall(heavyDataHex);
+	const revmLimitOf = (hardfork: string) =>
+		BigInt(readBudgetByFork[nodeForkFor(hardfork)]) + heavyIntrinsic;
 	const estimateVerdicts: Record<string, string> = {};
 	const budgetVerdicts: Record<string, string> = {};
 	for (const [hardfork, spec] of Object.entries(REVM_SPEC_BY_HARDFORK)) {
-		estimateVerdicts[hardfork] = verdict(spec, BigInt(heavyEstimates.revm));
-		budgetVerdicts[hardfork] = verdict(spec, defaultReadBudget);
+		estimateVerdicts[hardfork] = verdict(
+			spec,
+			BigInt(heavyEstimatesByFork[nodeForkFor(hardfork)].revm),
+		);
+		budgetVerdicts[hardfork] = verdict(spec, revmLimitOf(hardfork));
 	}
 	out.admittedHardforks = Object.keys(REVM_SPEC_BY_HARDFORK);
 	out.estimateVerdicts = estimateVerdicts;
 	out.budgetVerdicts = budgetVerdicts;
 
-	// And the counter-examples, on the two specs the table refuses, so the refusal
-	// is evidence-backed rather than asserted: the SAME estimate and the SAME
-	// budget are rejected outright there.
-	out.estimateOnPrague = verdict('PRAGUE', BigInt(heavyEstimates.revm));
-	out.budgetOnOsaka = verdict('OSAKA', defaultReadBudget);
+	// And the counter-examples, so the per-fork figures are evidence-backed rather
+	// than asserted. CANCUN's estimate (no floor) is rejected outright by revm on
+	// Prague: that is what the node got wrong before it applied the floor. And the
+	// node's Osaka read budget is rejected on Osaka WITHOUT `disableTxGasLimitCap`
+	// (`TxGasLimitGreaterThanCap`): the switch, not luck, is what lets an ordinary
+	// `eth_call` run there.
+	out.cancunEstimateOnPrague = verdict(
+		'PRAGUE',
+		BigInt(heavyEstimatesByFork.cancun.revm),
+	);
+	out.osakaBudgetWithoutTheSwitch = verdict(
+		'OSAKA',
+		revmLimitOf('osaka'),
+		false,
+	);
 
 	// ---------- ...and judged by the PROTOCOL, not just by revm ----------
 	// The node and revm agree about intrinsic gas BY CONSTRUCTION: the engine
@@ -1636,12 +1760,14 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	// at therefore splits the two engines by exactly `2 * ceil(len/32)` gas — which
 	// is the divergence this section exists to catch, and nothing else looks at it.
 	//
-	// It runs BELOW `createNode()` on purpose: the node pins Cancun and exposes no
-	// hardfork, so the only way to reach another fork is to build the two read
-	// engines directly and hand each the SAME `Common`, exactly as a node whose
-	// hardfork had moved would. Both estimates are then assembled with the node's
-	// own line of arithmetic (`r.executionGasUsed + intrinsicGas(data, isCreate,
-	// common)`, from `node.ts`'s `eth_estimateGas` case).
+	// It runs BELOW `createNode()` on purpose: the node offers only Cancun, Prague
+	// and Osaka, and this term's boundary is at Shanghai, so the only way to reach
+	// the forks either side of it is to build the two read engines directly and
+	// hand each the SAME `Common`, exactly as a node on that fork would. Both
+	// estimates are then assembled with the node's own line of arithmetic
+	// (`r.executionGasUsed + intrinsicGas(data, isCreate, common)`, the single run
+	// at the upper bound of `node.ts`'s `eth_estimateGas` search, which for this
+	// CREATE is also its answer).
 	const CREATE_INITCODE = initcodeOfLength(64); // 2 initcode words
 
 	/** `eth_estimateGas` for a CREATE of {@link CREATE_INITCODE}, per engine. */
@@ -1750,8 +1876,8 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 	// properties are invisible in a receipt:
 	//
 	//   * the transaction path must carry NONE of the read path's simulation
-	//     switches (`disableBaseFee` / `disableBlockGasLimit` / `disableEip3607` /
-	//     `disableBalanceCheck`). `revm-wasm` REFUSES to combine any of them with
+	//     switches (`disableBaseFee` / `disableBlockGasLimit` /
+	//     `disableTxGasLimitCap` / `disableEip3607` / `disableBalanceCheck`). `revm-wasm` REFUSES to combine any of them with
 	//     committing, so a builder who copied the read path's options object
 	//     would get a throw — but one who copied them onto a `commit:false`
 	//     simulation would silently execute a transaction with relaxed VALIDITY,
@@ -1868,6 +1994,7 @@ export async function runRevmEngineChecks(params: {runtimeWasmUrl: string}) {
 					'disableBaseFee',
 					'disableBalanceCheck',
 					'disableBlockGasLimit',
+					'disableTxGasLimitCap',
 					'disableEip3607',
 				] as const
 			).filter((k) => seen[0]?.[k] !== undefined);

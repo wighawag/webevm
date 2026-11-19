@@ -80,8 +80,8 @@ test('engine seam (default @ethereumjs/evm, injected engine, reads and transacti
 	// option and no engine's concept.
 	expect(c.overLimitOutcome).toBe('refused');
 	expect(c.overLimitErrorCode).toBe(-32000);
-	expect(c.overLimitError).toContain('40000000');
-	expect(c.overLimitError).toContain('30000000');
+	expect(c.overLimitError).toContain('12000000');
+	expect(c.overLimitError).toContain('10000000');
 	expect(c.overLimitError).toContain('blockGasLimit');
 	// ...and the engine was never asked to execute it.
 	expect(c.stubTransactCountAfterOverLimit).toBe(1);

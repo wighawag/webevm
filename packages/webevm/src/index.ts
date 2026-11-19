@@ -11,6 +11,7 @@ export {
 	createMemoryPersistence,
 } from './persistence.js';
 export type {
+	NodeHardfork,
 	SlimNode,
 	ServedPort,
 	NodeOptions,
