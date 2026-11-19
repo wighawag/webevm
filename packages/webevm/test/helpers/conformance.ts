@@ -40,7 +40,7 @@
  */
 import {createVM, runTx, type VM} from '@ethereumjs/vm';
 import {MerkleStateManager} from '@ethereumjs/statemanager';
-import {Common, Mainnet, Hardfork} from '@ethereumjs/common';
+import {Common, Mainnet} from '@ethereumjs/common';
 import {createBlock, type Block} from '@ethereumjs/block';
 import {createTxFromRLP, type TypedTransaction} from '@ethereumjs/tx';
 import {
@@ -231,6 +231,16 @@ interface RefReceipt {
 	}[];
 }
 
+/**
+ * THE FORK THE BATTERY RUNS ON, stated once and handed to BOTH sides: the
+ * battery's node (`hardfork`) and the reference's `Common`. Two independent
+ * statements of the fork would be the drift the reference exists to rule out: a
+ * node on Osaka diffed against a Cancun reference reports every receipt whose
+ * calldata floor binds as a mismatch, and agreeing by accident is no better. It is
+ * the node's DEFAULT fork, which is what a consumer who passes no `hardfork` runs.
+ */
+export const CONFORMANCE_HARDFORK = 'osaka' as const;
+
 class Reference {
 	common: Common;
 	sm: MerkleStateManager;
@@ -242,7 +252,7 @@ class Reference {
 	constructor() {
 		this.common = new Common({
 			chain: {...Mainnet, chainId: CHAIN_ID, name: 'reference'},
-			hardfork: Hardfork.Cancun,
+			hardfork: CONFORMANCE_HARDFORK,
 			customCrypto: {keccak256: (m: Uint8Array) => keccak_256(m)},
 		});
 		this.sm = new MerkleStateManager();
@@ -599,6 +609,7 @@ async function runBattery(
 			: undefined;
 	const node: SlimNode = await createNode({
 		chainId: CHAIN_ID,
+		hardfork: CONFORMANCE_HARDFORK,
 		computeStateRoot,
 		miningConfig: {type: 'auto'},
 		initialBalances: {[account.address]: GENESIS_BALANCE},
@@ -1876,9 +1887,16 @@ async function runBattery(
 		// `submitTo` / `blockNumberOf` / `nonceOf` are the shared helpers above: one
 		// submission read as either the mined status or the refusal text.
 
+		// ON PRAGUE, NOT ON THE BATTERY'S FORK, and that is the step's subject rather
+		// than a workaround: from Osaka on EIP-7825 caps every transaction at
+		// 16,777,216 gas, well below the 30,000,000 default block gas limit, so on
+		// Osaka no transaction above the default block limit gets as far as the
+		// block-limit refusal, and no `blockGasLimit` can lift one past the cap. The
+		// last node of this step asserts exactly that, on the battery's own fork.
 		// ---- a node at the DEFAULT block gas limit refuses the over-limit tx ----
 		const nodeDefault = await createNode({
 			chainId: CHAIN_ID,
+			hardfork: 'prague',
 			computeStateRoot,
 			miningConfig: {type: 'auto'},
 			initialBalances: {[account.address]: GENESIS_BALANCE},
@@ -1956,6 +1974,7 @@ async function runBattery(
 		// ---- ...and a node CONFIGURED for it mines the very same transaction ----
 		const nodeRaised = await createNode({
 			chainId: CHAIN_ID,
+			hardfork: 'prague',
 			computeStateRoot,
 			miningConfig: {type: 'auto'},
 			blockGasLimit: RAISED_BLOCK_GAS_LIMIT,
@@ -2021,6 +2040,47 @@ async function runBattery(
 			'named',
 		);
 		await nodeRaised.dispose();
+
+		// ---- ...and from Osaka on, NO block gas limit lifts a transaction past the
+		// EIP-7825 cap: the very transaction the raised Prague node mined is refused
+		// by a node on the battery's fork configured with the same raised limit, in
+		// the node's words (geth's leading clause), naming the cap and the tx.
+		const nodeCapped = await createNode({
+			chainId: CHAIN_ID,
+			hardfork: CONFORMANCE_HARDFORK,
+			computeStateRoot,
+			miningConfig: {type: 'auto'},
+			blockGasLimit: RAISED_BLOCK_GAS_LIMIT,
+			initialBalances: {[account.address]: GENESIS_BALANCE},
+			engine: await makeEngine?.(),
+		});
+		const capped = await submitTo(nodeCapped, overLimitRaw);
+		cmp(m, 'over-cap tx on a raised Osaka node', capped.outcome, 'refused');
+		cmp(
+			m,
+			"cap refusal is in geth's words",
+			names(capped.message, 'transaction gas limit too high'),
+			'named',
+		);
+		cmp(
+			m,
+			'cap refusal names the EIP-7825 cap',
+			names(capped.message, 'cap: 16777216'),
+			'named',
+		);
+		cmp(
+			m,
+			"cap refusal names the tx's gas limit",
+			names(capped.message, String(OVER_DEFAULT_TX_GAS)),
+			'named',
+		);
+		cmp(
+			m,
+			'no block was mined for the capped tx',
+			await blockNumberOf(nodeCapped),
+			0n,
+		);
+		await nodeCapped.dispose();
 		steps.push({
 			label: 'block gas limit refuses an over-limit tx; blockGasLimit lifts it',
 			mismatches: m,

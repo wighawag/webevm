@@ -73,8 +73,8 @@ importers:
         specifier: ^3.8.0
         version: 3.8.3
       revm-wasm:
-        specifier: ^0.3.1
-        version: 0.3.1
+        specifier: ^0.5.0
+        version: 0.5.0
       tevm:
         specifier: 1.0.0-next.149
         version: 1.0.0-next.149(@tevm/ts-plugin@1.0.0-rc.151(typescript@5.9.3)(viem@2.45.0(typescript@5.9.3)(zod@4.4.3))(zod@4.4.3))(@types/node@25.9.1)(terser@5.48.0)(tsx@4.22.4)(typescript@5.9.3)(viem@2.45.0(typescript@5.9.3)(zod@4.4.3))(vite@7.3.5(@types/node@25.9.1)(terser@5.48.0)(tsx@4.22.4))(webpack@5.107.2(esbuild@0.28.0))(zod@4.4.3)
@@ -121,8 +121,8 @@ importers:
         specifier: ^2.2.0
         version: 2.2.0
       revm-wasm:
-        specifier: ^0.3.1
-        version: 0.3.1
+        specifier: ^0.5.0
+        version: 0.5.0
     devDependencies:
       '@playwright/test':
         specifier: ^1.60.0
@@ -2879,8 +2879,8 @@ packages:
     resolution: {integrity: sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==}
     engines: {iojs: '>=1.0.0', node: '>=0.10.0'}
 
-  revm-wasm@0.3.1:
-    resolution: {integrity: sha512-nUEcnoiojMSFhnGGdog3+VvJcnQZ5bbW3Shm8vycoj2E5gQlID0aSVT/Sj+DBxoWiVt2XYv4y6i2xLL2l177ow==}
+  revm-wasm@0.5.0:
+    resolution: {integrity: sha512-UXufrg/6Pl3nmjH3PpMc5eTnu9fCiFjbPko5W9pTu+Sykz42voW9Kol+QBofGtcQ0nnV0nNmTFPbt4Yr6SZRkg==}
 
   rollup@4.61.0:
     resolution: {integrity: sha512-T9mWdbWfQtp0B5lv/HX+wrhYsmXRlcWnXXmJbXqKJhlRaoS6KMhq0gpyzW4UJfclcxrEdLnTgjT2NjruLONu0g==}
@@ -7569,7 +7569,7 @@ snapshots:
 
   reusify@1.1.0: {}
 
-  revm-wasm@0.3.1: {}
+  revm-wasm@0.5.0: {}
 
   rollup@4.61.0:
     dependencies:

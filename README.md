@@ -182,13 +182,13 @@ method-not-found (`-32601`) — it never fakes a result.
 | `eth_chainId`, `net_version` | from `chainId` option |
 | `eth_blockNumber` | latest mined block number |
 | `eth_getBlockByNumber`, `eth_getBlockByHash` | header + (optional) full txs; roots are zero unless the node was created with [`computeStateRoot: true`](#state-root-computestateroot-off-by-default-opt-in). `miner`, `mixHash` and `logsBloom` are **real**: the first two are the block's [`blockEnv`](#genesis-pre-state--block-env) coinbase/prevRandao (the same values `COINBASE`/`PREVRANDAO` return to a contract), the third is the OR of the block's receipt blooms, so the standard pre-filter finds the logs that are there. `sha3Uncles`/`transactionsRoot`/`receiptsRoot`/`difficulty`/`totalDifficulty`/`size`/`nonce` are placeholders, and the header's `gasUsed` is **always `0x0`** (read the receipts' `gasUsed`) |
-| `eth_call` | **runs on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)**; pure (never mutates); reverts throw `RpcError(3, 'execution reverted')`; **at the head by default, and at any block in the window with `stateHistory`**, executing against that block's state and block environment (a block below what the node holds is refused, see [State reads at past blocks](#state-reads-at-past-blocks-statehistory)). geth-style **state overrides** (3rd parameter: `balance`, `nonce`, `code`, `state`, `stateDiff`) are applied for that call only, and a malformed or oversized value is `-32602`; any other override field, and **block overrides** (4th parameter), are refused with `-32602` rather than ignored |
-| `eth_estimateGas` | **runs on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)**; the **smallest gas LIMIT at which the request succeeds**, found by re-executing it, with intrinsic gas (incl. EIP-3860) **+ the request's EIP-2930 `accessList`** (2,400/address + 1,900/key, as geth charges it) as the floor. A request that succeeds at what it consumes (a transfer, a plain deployment) gets exactly that, in one extra execution. A request that reverts at any limit gets `RpcError(3, 'execution reverted')` naming the decoded reason and carrying the callee's bytes; one that is simply too big for the allowance gets `-32000 gas required exceeds allowance` (geth's vocabulary), never a number. `gas` on the request is the **cap on the search**, capped in turn by the block gas limit. **At the head by default, and at any block in the window with [`stateHistory`](#state-reads-at-past-blocks-statehistory)**, and takes the same state overrides, like `eth_call` |
+| `eth_call` | **runs on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)**; pure (never mutates); an EIP-7702 `authorizationList` on the request is applied for the call (see [Hardfork](#hardfork-cancun-prague-osaka-default)), and from Prague on a `gas` too small to cover EIP-7623's calldata floor is refused with `-32000`. As on geth, a read is not held to EIP-7825's per-transaction cap on Osaka; reverts throw `RpcError(3, 'execution reverted')`; **at the head by default, and at any block in the window with `stateHistory`**, executing against that block's state and block environment (a block below what the node holds is refused, see [State reads at past blocks](#state-reads-at-past-blocks-statehistory)). geth-style **state overrides** (3rd parameter: `balance`, `nonce`, `code`, `state`, `stateDiff`) are applied for that call only, and a malformed or oversized value is `-32602`; any other override field, and **block overrides** (4th parameter), are refused with `-32602` rather than ignored |
+| `eth_estimateGas` | **runs on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)**; the **smallest gas LIMIT at which the request succeeds**, found by re-executing it, with intrinsic gas (incl. EIP-3860) **+ the request's EIP-2930 `accessList`** (2,400/address + 1,900/key, as geth charges it) as the floor. A request that succeeds at what it consumes (a transfer, a plain deployment) gets exactly that, in one extra execution. A request that reverts at any limit gets `RpcError(3, 'execution reverted')` naming the decoded reason and carrying the callee's bytes; one that is simply too big for the allowance gets `-32000 gas required exceeds allowance` (geth's vocabulary), never a number. `gas` on the request is the **cap on the search**, capped in turn by the block gas limit and, from Osaka on, by EIP-7825's per-transaction cap of 16,777,216. From Prague on the estimate is never below EIP-7623's calldata floor, and an EIP-7702 `authorizationList` is charged (25,000 per entry) and its delegations applied, so the estimate executes the delegated code. **At the head by default, and at any block in the window with [`stateHistory`](#state-reads-at-past-blocks-statehistory)**, and takes the same state overrides, like `eth_call` |
 | `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount` | state reads **at the head by default, and at any block in the window with `stateHistory`** (the values at the end of that block); see [State reads at past blocks](#state-reads-at-past-blocks-statehistory) |
 | `eth_gasPrice`, `eth_maxPriorityFeePerGas` | **constant** (faked fee market — local chain) |
 | `eth_feeHistory` | honours `newestBlock` (a block above the head is `-32000`); the window is clamped at genesis and at 1024 blocks, as geth clamps it, so a chain shorter than `blockCount` returns fewer entries; `baseFeePerGas` is each block's own and `gasUsedRatio` is summed from the block's receipts. `reward` is the **constant** `maxPriorityFeePerGas` (flat fee model), so this is not for real fee prediction |
 | `eth_fillTransaction` | fills missing nonce/gas/fees of a tx request and returns `{tx, raw}` (the `raw` is **unsigned** — sign client-side); viem's `prepareTransactionRequest` uses it. Its gas estimate **runs on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)** |
-| **`eth_sendRawTransaction`** | accepts a **signed** raw tx; mines per `miningConfig`. **Executes and commits on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)**, through its transaction operation |
+| **`eth_sendRawTransaction`** | accepts a **signed** raw tx (types 0, 1 and 2, and type 4 from Prague on); mines per `miningConfig`. Refused with `-32000` before execution, in geth's words: a gas limit below intrinsic gas or (from Prague on) below the calldata floor, one above the block gas limit or (from Osaka on) above 16,777,216, a replayed or future nonce, and a sender that cannot pay. **Executes and commits on the [engine](#engine-ethereumjsevm-default-vs-revm-wasm-opt-in)**, through its transaction operation |
 | **`eth_sendRawTransactionSync`** | the fast path: send + mine + return receipt in one call |
 | `eth_getTransactionReceipt`, `eth_getTransactionByHash` | from the in-memory store |
 | `eth_getLogs` | address + topic filtering over mined logs, by `fromBlock`/`toBlock` or by `blockHash` (EIP-234; an unknown hash is `-32000`, a hash together with a range is `-32602`). An omitted `fromBlock` means block **0** here, where geth means `latest`. Every log (here and inside receipts) carries `blockTimestamp`, its block's timestamp (execution-apis#639). **Perf note:** a full linear scan over all logs per call (O(total_logs), no index/cache) — fine for a local chain |
@@ -574,14 +574,17 @@ Caveats, all of them real:
   ([ADR 0014](docs/adr/0014-the-trie-is-derived-from-the-flat-state-not-a-state-manager.md)),
   so `createNode({computeStateRoot: true, engine: revm})` gives the fast engine and a
   real state root together. (It used to throw at construction.)
-- **Only the hardforks it can COST.** The engine serves `berlin`, `london`,
-  `paris`, `shanghai` and `cancun` (the node runs Cancun) and refuses `prague`
-  and `osaka` at construction, naming the EIP: revm enforces EIP-7623's calldata
-  floor from Prague on and the node's shared intrinsic-gas arithmetic does not
-  compute it, so `eth_estimateGas` could hand you a gas limit revm itself would
-  reject (`GasFloorMoreThanGasLimit`) — and a client uses an estimate as the
-  transaction's gas limit; Osaka additionally caps a transaction's gas limit
-  (EIP-7825) below this node's default read budget. The pre-Shanghai forks were
+- **Only the hardforks it can COST.** The engine serves `berlin` through
+  `osaka`, which covers every fork the node offers ([Hardfork](#hardfork-cancun-prague-osaka-default)),
+  and refuses `amsterdam` at construction, naming the reason: its gas model is
+  not the one the node's shared intrinsic-gas arithmetic implements, so
+  `eth_estimateGas` could hand you a gas limit computed under the wrong rules.
+  `prague` and `osaka` were refused until the node applied their gas rules
+  itself: the node never hands revm a read below EIP-7623's calldata floor, the
+  engine lifts EIP-7825's per-transaction cap on reads as geth does
+  (`disableTxGasLimitCap`, `revm-wasm@0.5.0`), and the node recommends no gas
+  limit outside either
+  ([ADR 0015](docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md)). The pre-Shanghai forks were
   refused too until `revm-wasm@0.3.1`, because both this node and revm charged
   EIP-3860's initcode word cost on forks that predate it; the node now charges
   that term only where `@ethereumjs/common` says the protocol does, and the
@@ -661,6 +664,24 @@ execution-gas gate in `packages/benchmarks`, which asserts every backend charges
 the same gas — two EVMs that agree on every return value can still disagree on
 where execution runs OUT of gas.
 
+## Hardfork: `cancun`, `prague`, `osaka` (default)
+
+```ts
+const node = await createNode({hardfork: 'prague'}); // default 'osaka'
+```
+
+Every block of a node runs one fork, its genesis included. The option takes the forks whose gas rules the node implements end to end, on both engines, and anything else throws at construction (a typo must not quietly become the default):
+
+- **`'osaka'` (default)**: Prague's rules plus EIP-7825's per-transaction gas cap of 16,777,216. A transaction asking for more is refused at submit (`transaction gas limit too high`, geth's words) and `eth_estimateGas` never recommends more. `eth_call` is not held to the cap, as on geth: its default budget stays 30,000,000, on both engines (the revm engine lifts the cap on reads with `revm-wasm`'s `disableTxGasLimitCap`). Also `CLZ`, the secp256r1 `P256VERIFY` precompile and the re-priced `MODEXP`.
+- **`'prague'`**: EIP-7702 set-code transactions (type 4) with their authorization lists, executed on both engines; EIP-7623's calldata floor, charged on receipts, refused below at submit (`insufficient gas for floor data gas cost`), and never undercut by `eth_estimateGas`; the BLS12-381 precompiles.
+- **`'cancun'`**: what every node ran before this option existed.
+
+Why these rules live in the node rather than on the engine seam: [ADR 0015](docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md).
+
+**What no fork gets here: block-level system operations.** The node builds its own blocks and runs no system call at their start or end, so EIP-4788's beacon-root contract (Cancun) and EIP-2935's block-hash history contract (Prague) are never written, and no EIP-7002 / EIP-7251 requests are produced. `BLOCKHASH` is unaffected at every fork: it reads the node's own blocks.
+
+**The fork is part of the chain.** `dumpState()` records it (`hardfork`), and `loadState()` refuses a dump taken on another fork, because a block's hash covers the header fields its fork defines. A dump that predates the field was taken on Cancun. That includes a chain persisted to IndexedDB by an earlier version: a node restored from it comes up only with `hardfork: 'cancun'`, and otherwise fails at construction naming the option, with the stored chain left untouched.
+
 ## Genesis pre-state + block env
 
 - **`initialState`** — full genesis pre-state (`address -> {balance, nonce, code,
@@ -708,7 +729,7 @@ await test.setBlockTimestampInterval({interval: 1}); // reproducible from here o
 
 An interval makes a simulated chain reproducible: its timestamps no longer depend
 on how fast it ran. The clock is a setting of the node, not part of `dumpState`;
-`loadState` drops a pending next timestamp. See [ADR 0015](docs/adr/0015-the-node-has-a-clock-and-time-cheats-move-it.md).
+`loadState` drops a pending next timestamp. See [ADR 0016](docs/adr/0016-the-node-has-a-clock-and-time-cheats-move-it.md).
 
 ## On comprehensive EVM test fixtures (`ethereum/tests`)
 

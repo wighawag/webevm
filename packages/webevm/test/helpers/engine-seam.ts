@@ -207,6 +207,11 @@ export async function runEngineSeamChecks() {
 		chainId: CHAIN_ID,
 		miningConfig: {type: 'auto'},
 		initialBalances: {[account.address]: 10n ** 24n},
+		// BELOW EIP-7825's per-transaction cap (16,777,216 on the default fork,
+		// Osaka), so that 5b below can sign a transaction too large for the BLOCK
+		// that the cap does not refuse first: the node checks the cap at parse,
+		// before the block gas limit, and the two are separate refusals.
+		blockGasLimit: 10_000_000n,
 		engine: stub,
 	});
 	out.stubEngineId = stubNode.engine.id;
@@ -284,7 +289,7 @@ export async function runEngineSeamChecks() {
 		nonce: 1,
 		to: TARGET,
 		value: 1n,
-		gas: 40_000_000n,
+		gas: 12_000_000n,
 		maxFeePerGas: 2_000_000_000n,
 		maxPriorityFeePerGas: 1_000_000_000n,
 	});

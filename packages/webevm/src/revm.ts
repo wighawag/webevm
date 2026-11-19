@@ -48,17 +48,30 @@
  *
  * AND WHICH FORKS. It serves the hardforks whose transaction costing the node's
  * own arithmetic reproduces AND the PROTOCOL agrees with
- * (`REVM_SPEC_BY_HARDFORK` — Berlin through Cancun today), and refuses the rest
- * BY NAME at construction (`REVM_REFUSED_HARDFORKS`): Prague and Osaka, because
- * `./intrinsic-gas.ts` does not compute the EIP-7623 calldata floor that revm
- * enforces. See ADR 0008.
+ * (`REVM_SPEC_BY_HARDFORK`: Berlin through Osaka today), and refuses the rest
+ * BY NAME at construction (`REVM_REFUSED_HARDFORKS`): Amsterdam, whose gas model
+ * `./intrinsic-gas.ts` does not implement. Prague and Osaka were refused until
+ * the node applied their gas rules above the seam (ADR 0008's fourth amendment,
+ * ADR 0015).
  */
 import type {Common} from '@ethereumjs/common';
 import type {Block} from '@ethereumjs/block';
-import {bigIntToBytes, equalsBytes, generateAddress} from '@ethereumjs/util';
+import {
+	bigIntToBytes,
+	bytesToBigInt,
+	equalsBytes,
+	generateAddress,
+	setLengthLeft,
+} from '@ethereumjs/util';
 import type {OverlayStorageStateManager} from './state-manager.js';
 import {createRevm, type SpecName, type WasmSource} from 'revm-wasm';
-import type {BlockEnv, ExecuteOptions, Outcome, Revm} from 'revm-wasm';
+import type {
+	Authorization,
+	BlockEnv,
+	ExecuteOptions,
+	Outcome,
+	Revm,
+} from 'revm-wasm';
 import {intrinsicGas} from './intrinsic-gas.js';
 import {SimpleStateManagerStore} from './revm-state-store.js';
 import type {
@@ -85,10 +98,10 @@ export interface RevmEngineOptions {
 /**
  * ethereumjs hardfork name -> revm spec: the hardforks this engine ADMITS.
  *
- * The node runs Cancun today and nothing here can change that, so this table is
- * a GUARD rather than a feature: if the node's hardfork ever moves, an engine
- * that silently kept running Cancun rules would charge different gas from the
- * default engine and nothing would say so.
+ * The node runs Cancun, Prague or Osaka (`NodeOptions.hardfork`), so this table
+ * is reached by every node, and it is still a GUARD as much as a feature: an
+ * engine that silently ran one fork's rules on a node configured for another
+ * would charge different gas from the default engine and nothing would say so.
  *
  * WHAT MAKES A FORK ADMISSIBLE is not that revm has a spec for it, and it is not
  * that the node and revm AGREE about it either. Agreement is necessary and not
@@ -101,14 +114,18 @@ export interface RevmEngineOptions {
  * number back, so the two sides agree about intrinsic gas by construction and a
  * term that is wrong at a fork is wrong on both sides at once.
  *
- * Prague and Osaka fail (a). Berlin, London and Paris once failed (b) — both
+ * Prague and Osaka once failed (a): the node's estimate ignored EIP-7623's
+ * calldata floor and its read budget exceeded EIP-7825's cap, both of which revm
+ * enforces. The node now applies both above the seam, so every read it hands
+ * this engine is one revm accepts (ADR 0015), and both are admitted. Berlin,
+ * London and Paris once failed (b): both
  * this node and `revm-wasm@0.3.0` charged EIP-3860's initcode word cost there,
  * and EIP-3860 arrived in Shanghai. `revm-wasm@0.3.1` fixed its half, and
  * ./intrinsic-gas.ts now gates the term on the node's `Common`, so all three are
  * back.
  *
  * ADDING A FORK BELOW BERLIN COSTS MORE THAN A LINE HERE. ./intrinsic-gas.ts is
- * protocol-correct over Istanbul..Cancun only: it hardcodes EIP-2028's 16 gas per
+ * protocol-correct over Istanbul..Osaka only: it hardcodes EIP-2028's 16 gas per
  * non-zero calldata byte, which was 68 before Istanbul, so a pre-Istanbul entry in
  * this table would make `eth_estimateGas` UNDER-estimate by 52 gas per non-zero
  * byte — and a client uses an estimate as the transaction's gas limit. Anything
@@ -152,29 +169,28 @@ export const REVM_SPEC_BY_HARDFORK: Readonly<Record<string, SpecName>> =
 		paris: 'MERGE',
 		shanghai: 'SHANGHAI',
 		cancun: 'CANCUN',
+		prague: 'PRAGUE',
+		osaka: 'OSAKA',
 	});
 
 /**
  * Hardforks revm HAS a spec for and this engine still refuses, each with the
  * reason quoted verbatim in the refusal.
  *
- * These are the silent-wrong-answer cases. From Prague on, revm ENFORCES rules
+ * These are the silent-wrong-answer cases: forks at which revm ENFORCES rules
  * the node's own arithmetic does not implement, so `eth_estimateGas` could return
- * a number the engine that produced it would REJECT — and viem uses that number
+ * a number the engine that produced it would REJECT, and viem uses that number
  * as the transaction's gas limit. A loud refusal at construction is the honest
  * edge (ADR 0004); a plausible estimate is not.
  *
  * To admit one of these, make the node's arithmetic BOTH agree with revm under
  * that spec AND match the protocol at that fork: implement the missing rule in
- * ./intrinsic-gas.ts and in the read budget here, then prove it against the
- * engine and move the entry to {@link REVM_SPEC_BY_HARDFORK}. Note that the
- * EIP-7623 floor is not a TERM of the intrinsic-gas formula but a floor on the
- * transaction's total, so unlike the EIP-3860 fork gate it cannot be threaded
- * through ./intrinsic-gas.ts alone — both callers have to learn about it. The
- * measurements behind each line are in
- * `docs/spikes/prague-intrinsic-gas-floor-or-refuse/` and
- * `docs/spikes/intrinsic-gas-charges-eip-3860-on-forks-that-predate-it/` (§6 for
- * the re-measurement on `revm-wasm@0.3.1`, which left both of these standing).
+ * ./intrinsic-gas.ts (or, for a rule about which reads and transactions are
+ * admissible rather than a term of the formula, in the node's admission above
+ * the seam, as Prague's floor and Osaka's cap are: ADR 0015), then prove it
+ * against the engine and move the entry to {@link REVM_SPEC_BY_HARDFORK}.
+ * `prague` and `osaka` were here until that work was done; the measurements
+ * that kept them here are in `docs/spikes/prague-intrinsic-gas-floor-or-refuse/`.
  *
  * FROZEN for the same reason as {@link REVM_SPEC_BY_HARDFORK}, where the freeze
  * decision (and why the guard reads these objects rather than a load-time
@@ -183,19 +199,12 @@ export const REVM_SPEC_BY_HARDFORK: Readonly<Record<string, SpecName>> =
  */
 export const REVM_REFUSED_HARDFORKS: Readonly<Record<string, string>> =
 	Object.freeze({
-		prague:
-			`revm enforces the EIP-7623 calldata floor (a transaction pays at least ` +
-			`21000 + 10 gas per calldata token, tokens being 1 per zero byte and 4 per ` +
-			`non-zero byte) and this node's shared intrinsic-gas arithmetic ` +
-			`(src/intrinsic-gas.ts) computes only the pre-Prague formula, so ` +
-			`eth_estimateGas would return a gas limit revm itself rejects with ` +
-			`GasFloorMoreThanGasLimit for a calldata-heavy call — and a client uses an ` +
-			`estimate as the transaction's gas limit`,
-		osaka:
-			`it inherits Prague's EIP-7623 calldata floor, which src/intrinsic-gas.ts ` +
-			`does not compute, and adds the EIP-7825 transaction gas limit cap of ` +
-			`16777216, which is below the node's default read budget of 30000000 — so ` +
-			`an ordinary eth_call would be rejected outright with TxGasLimitGreaterThanCap`,
+		amsterdam:
+			`its gas model is not the one this node's shared intrinsic-gas arithmetic ` +
+			`(src/intrinsic-gas.ts) implements: EIP-8037 splits intrinsic gas into a ` +
+			`regular and a state dimension with its own cap, and EIP-7976 and EIP-7981 ` +
+			`re-price the calldata floor, so eth_estimateGas would return a gas limit ` +
+			`computed under Osaka's rules for a chain running Amsterdam's`,
 	});
 
 /**
@@ -243,10 +252,11 @@ export async function createRevmEngine(
 			// A HARDFORK THIS ENGINE CANNOT COST, refused out loud and at construction:
 			// revm would run it and charge rules the node's own arithmetic does not
 			// implement, and a consumer who asked for revm and silently got something
-			// else would measure the wrong thing forever. Unreachable while the node is
-			// pinned to Cancun, which is the point — it fires the day that moves,
-			// rather than letting `eth_estimateGas` return a number this engine would
-			// then reject.
+			// else would measure the wrong thing forever. Unreachable through
+			// `createNode()` today (every fork the node offers is admitted), which is
+			// the point: it fires the day the node offers a fork this engine has not
+			// been costed for, rather than letting `eth_estimateGas` return a number
+			// this engine would then reject.
 			const hardfork = context.common.hardfork();
 			const refused = REVM_REFUSED_HARDFORKS[hardfork];
 			if (refused !== undefined) {
@@ -346,6 +356,18 @@ export async function createRevmEngine(
 				//                       transaction being MINED (`transact` below, and
 				//                       `refuseIfOverBlockGasLimit` in ./node.ts ahead of
 				//                       it), and a read is not mined;
+				//  disableTxGasLimitCap EIP-7825 (Osaka on) caps a TRANSACTION's gas limit
+				//                       at 16,777,216, and revm applies it to every
+				//                       execution. A read is not a transaction: geth skips
+				//                       the cap for `eth_call` (and keeps it for
+				//                       `eth_estimateGas`, which the node caps itself), and
+				//                       `@ethereumjs/evm`'s `runCall` never enforced it, so
+				//                       without this the node's default 30,000,000 budget
+				//                       is refused here and runs on the default engine. It
+				//                       lifts ONLY the cap: EIP-7623's calldata floor is
+				//                       still enforced, which is why the node refuses a
+				//                       read below the floor itself (ADR 0015). Needs
+				//                       `revm-wasm@0.5.0`; a no-op before Osaka;
 				//  disableEip3607       EIP-3607 rejects a caller that holds code, which
 				//                       is a rule about SENDING a transaction. Simulating
 				//                       from a contract address is ordinary practice
@@ -386,6 +408,7 @@ export async function createRevmEngine(
 				// never a fabricated balance.
 				disableBaseFee: true,
 				disableBlockGasLimit: true,
+				disableTxGasLimitCap: true,
 				disableEip3607: true,
 				// Logs and the post-state map are not part of a read's answer, and
 				// building them costs ~0.9 microseconds per call.
@@ -493,14 +516,19 @@ export async function createRevmEngine(
 							})),
 						}
 					: {}),
+				// EIP-7702's authorization list (a type-4 transaction, Prague on), in
+				// revm's shape. revm recovers each authority and applies the delegations
+				// itself, exactly as `runTx` does on the default engine: an authorization
+				// is a SIGNATURE inside the transaction, not its sender, so recovering it
+				// is execution and not sender derivation, and the seam carries the list
+				// on the transaction rather than as a node-decided value.
+				...authorizationsOf(tx),
 				// NOT MAPPED, and named so it is a known gap rather than an oversight:
 				// EIP-4844's `blobVersionedHashes` / `maxFeePerBlobGas` (a type-3
-				// transaction) and EIP-7702's `authorizationList` (post-Cancun, so
-				// unreachable while this engine admits Berlin..Cancun). The type-3 receipt
-				// is incomplete on BOTH engines — `blobGasUsed` / `blobGasPrice` are
-				// absent from the seam's result altogether — and that limitation is
-				// documented where it would be met by
-				// `document-the-type-3-receipt-gap-where-it-would-be-met`.
+				// transaction). The type-3 receipt is incomplete on BOTH engines
+				// (`blobGasUsed` / `blobGasPrice` are absent from the seam's result
+				// altogether), and that limitation is documented where it would be met
+				// by `document-the-type-3-receipt-gap-where-it-would-be-met`.
 				spec,
 				chainId,
 				block: blockEnvOf(request.block),
@@ -509,7 +537,8 @@ export async function createRevmEngine(
 				// changes are all part of a transaction's answer, and `returnState:false`
 				// cannot be combined with committing anyway), and above all NONE of the
 				// read path's simulation switches: `disableBaseFee`,
-				// `disableBlockGasLimit`, `disableEip3607` and `disableBalanceCheck` each
+				// `disableBlockGasLimit`, `disableTxGasLimitCap`, `disableEip3607` and
+				// `disableBalanceCheck` each
 				// relax a transaction's VALIDITY, and a transaction that runs with them
 				// relaxed is not a transaction. `revm-wasm` refuses to combine them with
 				// committing, so copying the read path's options object here would throw
@@ -701,6 +730,33 @@ interface TransactionFields {
 	readonly maxFeePerGas?: bigint;
 	readonly maxPriorityFeePerGas?: bigint;
 	readonly accessList?: readonly [Uint8Array, Uint8Array[]][];
+	/** EIP-7702: `[chainId, address, nonce, yParity, r, s]`, each as RLP bytes. */
+	readonly authorizationList?: readonly Uint8Array[][];
+}
+
+/**
+ * A type-4 transaction's authorization list, as revm takes it: the RLP byte
+ * fields `@ethereumjs/tx` holds, decoded into numbers and 32-byte signature
+ * halves. An empty object for every other transaction type, so the spread above
+ * adds nothing to a transaction that has no list. Nothing is validated here: an
+ * entry with a wrong chain id, a stale nonce or a bad signature is SKIPPED by revm
+ * during execution, as EIP-7702 requires, never refused by the host.
+ */
+function authorizationsOf(tx: TransactionFields): {
+	authorizationList?: Authorization[];
+} {
+	const list = tx.authorizationList;
+	if (list === undefined) return {};
+	return {
+		authorizationList: list.map(([chainId, address, nonce, yParity, r, s]) => ({
+			chainId: bytesToBigInt(chainId),
+			address,
+			nonce: bytesToBigInt(nonce),
+			yParity: Number(bytesToBigInt(yParity)),
+			r: setLengthLeft(r, 32),
+			s: setLengthLeft(s, 32),
+		})),
+	};
 }
 
 /**

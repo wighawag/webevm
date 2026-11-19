@@ -149,6 +149,7 @@ import {
 	runGenesisTimestampWorkerChecks,
 } from './genesis-timestamp.js';
 import {runLogBlockTimestampChecks} from './log-block-timestamp.js';
+import {runHardforkChecks, runHardforkConstructionChecks} from './hardforks.js';
 import {runBlockClockChecks} from './block-clock.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
@@ -525,6 +526,20 @@ const cut: CodeUnderTest = {
 				results.errors = await runWorkerRpcErrorChecks(
 					String(ctx.params.workerUrl),
 				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// hardforks: what `createNode({hardfork})` offers, and what each fork
+		// changes (helpers/hardforks.ts), plus the option's own refusals.
+		if (ctx.params.mode === 'hardforks') {
+			try {
+				results.hardforks = {
+					battery: await runHardforkChecks(),
+					construction: await runHardforkConstructionChecks(),
+				};
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

@@ -15,7 +15,9 @@
  *   - then node.getStateRoot() must equal the case `hash`, and keccak(RLP(logs))
  *     must equal the case `logs`.
  *
- * We target the Cancun fork (the node's hardfork). Fixtures are vendored under
+ * We run every case of the forks the fixtures and the node have in common,
+ * Cancun and Prague, on a node created with that `hardfork` (the vendored
+ * fixtures carry no Osaka cases). Fixtures are vendored under
  * tests/fixtures (see tests/fixtures/README.md for the pinned source tag).
  */
 import {hexToBytes, bytesToHex, type PrefixedHexString} from '@ethereumjs/util';
@@ -24,7 +26,16 @@ import {createNode} from '../../src/index.js';
 import type {GenesisAccount, BlockEnv} from '../../src/index.js';
 import type {EngineFactory} from './conformance.js';
 
-const FORK = 'Cancun';
+/**
+ * fixture `post` key -> the node's `hardfork`: every fork both have. The node
+ * runs the case on the same fork the fixture's expected root was computed on, so
+ * a fork's gas rule the node gets wrong (EIP-7623's floor is charged on these
+ * transactions' receipts from Prague on) moves the post-state root.
+ */
+export const FORKS = [
+	['Cancun', 'cancun'],
+	['Prague', 'prague'],
+] as const;
 
 // --- minimal RLP encoder (just enough for the logs list: bytes + nested lists).
 // Kept self-contained to avoid a hoisting-sensitive @ethereumjs/rlp import. ---
@@ -126,69 +137,74 @@ export interface CaseResult {
 	txStatus: string | null;
 	/** The engine the case's node ran on (`node.engine.id`). */
 	engine: string;
+	/** The fork the case ran on: the fixture's `post` key. */
+	fork: string;
 	error?: string;
 }
 
-/** Run every Cancun case of one named state test (a fixture may hold several). */
+/** Run every case of one named state test (a fixture may hold several), per fork. */
 export async function runStateTestFixture(
 	name: string,
 	fixture: Record<string, StateTest>,
 	makeEngine?: EngineFactory,
 ): Promise<CaseResult[]> {
 	const results: CaseResult[] = [];
-	for (const [testName, test] of Object.entries(fixture)) {
-		const cases = test.post[FORK];
-		if (!cases) continue; // fixture doesn't cover Cancun
-		const initialState = toInitialState(test.pre);
-		const blockEnv = toBlockEnv(test.env);
-		const chainId = Number(test.config?.chainid ?? '0x1');
+	for (const [fork, hardfork] of FORKS)
+		for (const [testName, test] of Object.entries(fixture)) {
+			const cases = test.post[fork];
+			if (!cases) continue; // fixture doesn't cover this fork
+			const initialState = toInitialState(test.pre);
+			const blockEnv = toBlockEnv(test.env);
+			const chainId = Number(test.config?.chainid ?? '0x1');
 
-		for (let i = 0; i < cases.length; i++) {
-			const c = cases[i];
-			const r: CaseResult = {
-				test: `${name}:${testName}`,
-				caseIndex: i,
-				indexes: c.indexes,
-				rootMatch: false,
-				logsMatch: false,
-				gotRoot: '',
-				wantRoot: c.hash,
-				gotLogs: '',
-				wantLogs: c.logs,
-				txStatus: null,
-				engine: '',
-			};
-			// Fresh node per case (each starts from the same `pre`).
-			const node = await createNode({
-				chainId,
-				computeStateRoot: true,
-				miningConfig: {type: 'auto'},
-				initialState,
-				blockEnv,
-				// One engine per node (an engine binds to exactly one): with revm
-				// installed the same roots must come out, since the trie is derived
-				// from the flat state whichever engine wrote it.
-				engine: makeEngine ? await makeEngine() : undefined,
-			});
-			r.engine = node.engine.id;
-			try {
-				const rcpt = (await node.request({
-					method: 'eth_sendRawTransactionSync',
-					params: [c.txbytes],
-				})) as any;
-				r.txStatus = rcpt?.status ?? null;
-				r.gotRoot = await node.getStateRoot();
-				r.gotLogs = logsHash(rcpt?.logs ?? []);
-				r.rootMatch = r.gotRoot.toLowerCase() === c.hash.toLowerCase();
-				r.logsMatch = r.gotLogs.toLowerCase() === c.logs.toLowerCase();
-			} catch (e: any) {
-				r.error = String(e?.message ?? e);
-			} finally {
-				await node.dispose();
+			for (let i = 0; i < cases.length; i++) {
+				const c = cases[i];
+				const r: CaseResult = {
+					test: `${name}:${testName}`,
+					caseIndex: i,
+					indexes: c.indexes,
+					rootMatch: false,
+					logsMatch: false,
+					gotRoot: '',
+					wantRoot: c.hash,
+					gotLogs: '',
+					wantLogs: c.logs,
+					txStatus: null,
+					engine: '',
+					fork,
+				};
+				// Fresh node per case (each starts from the same `pre`).
+				const node = await createNode({
+					chainId,
+					computeStateRoot: true,
+					hardfork,
+					miningConfig: {type: 'auto'},
+					initialState,
+					blockEnv,
+					// One engine per node (an engine binds to exactly one): with revm
+					// installed the same roots must come out, since the trie is derived
+					// from the flat state whichever engine wrote it.
+					engine: makeEngine ? await makeEngine() : undefined,
+				});
+				r.engine = node.engine.id;
+				try {
+					const rcpt = (await node.request({
+						method: 'eth_sendRawTransactionSync',
+						params: [c.txbytes],
+					})) as any;
+					r.txStatus = rcpt?.status ?? null;
+					r.gotRoot = await node.getStateRoot();
+					r.gotLogs = logsHash(rcpt?.logs ?? []);
+					r.rootMatch = r.gotRoot.toLowerCase() === c.hash.toLowerCase();
+					r.logsMatch = r.gotLogs.toLowerCase() === c.logs.toLowerCase();
+				} catch (e: any) {
+					r.error = String(e?.message ?? e);
+				} finally {
+					await node.dispose();
+				}
+				results.push(r);
 			}
-			results.push(r);
 		}
-	}
 	return results;
 }
 
@@ -199,6 +215,8 @@ export async function runStateTests(
 ): Promise<{
 	/** Every engine a case ran on: exactly one, the one under test. */
 	engines: string[];
+	/** Every fork a case ran on. */
+	forks: string[];
 	cases: CaseResult[];
 	total: number;
 	passed: number;
@@ -214,6 +232,7 @@ export async function runStateTests(
 	).length;
 	return {
 		engines: [...new Set(cases.map((c) => c.engine))],
+		forks: [...new Set(cases.map((c) => c.fork))],
 		cases,
 		total: cases.length,
 		passed,

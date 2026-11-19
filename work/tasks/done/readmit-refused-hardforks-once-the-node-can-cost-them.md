@@ -59,15 +59,15 @@ What replaces the obligation is a live guard: the suite measures the EIP-2028 bo
 
 ## Acceptance criteria
 
-- [ ] An entry condition for the family being re-admitted actually holds, and is stated in the work.
-- [ ] For each fork re-admitted, everything the node computes about a transaction (a) agrees with what revm enforces under that spec AND (b) is what the PROTOCOL charges at that fork, judged by a witness that is neither party, per ADR 0008's amended rule.
-- [ ] The agreement is asserted against the ENGINE rather than a restated formula, following the existing test's shape, and a still-refused fork remains as a counter-example so the assertions stay load-bearing.
-- [ ] Clause (b) is verified for EVERY term the shared formula bakes in, not just EIP-3860, either because `clause-b-covers-only-eip-3860-not-the-rest-of-the-formula` landed first or by explicit manual check recorded here.
-- [ ] `src/intrinsic-gas.ts` remains SHARED and unforked; if EIP-7623's floor cannot live inside `intrinsicGas()`, the seam it needs is designed deliberately rather than by duplicating the formula.
-- [ ] Family 1 only: Osaka is re-admitted only if the EIP-7825 cap is handled too, and Prague is not re-admitted on the strength of EIP-7623 alone while EIP-7702 / EIP-2935 are unchecked. That is the half-truth ADR 0008 refuses.
-- [ ] Family 2 only: the upstream fix is verified against the shipped artifact by re-running the probe, not taken from a changelog.
-- [ ] The entry moves between the two tables, and ADR 0008 gains a short amendment recording that the refusal was lifted and on what evidence.
-- [ ] Cancun and Shanghai behaviour and the reference gas are demonstrably unchanged: `number()` 2446, `sumTo(2000)` 498689, `keccakLoop(2000)` 1107052 returning `0x26812edce879c319b6c7baf99bf3c2f65aa4b81b023d72cd6dfc7ac31caafe5a`.
+- [x] An entry condition for the family being re-admitted actually holds, and is stated in the work.
+- [x] For each fork re-admitted, everything the node computes about a transaction (a) agrees with what revm enforces under that spec AND (b) is what the PROTOCOL charges at that fork, judged by a witness that is neither party, per ADR 0008's amended rule.
+- [x] The agreement is asserted against the ENGINE rather than a restated formula, following the existing test's shape, and a still-refused fork remains as a counter-example so the assertions stay load-bearing.
+- [x] Clause (b) is verified for EVERY term the shared formula bakes in, not just EIP-3860, either because `clause-b-covers-only-eip-3860-not-the-rest-of-the-formula` landed first or by explicit manual check recorded here.
+- [x] `src/intrinsic-gas.ts` remains SHARED and unforked; if EIP-7623's floor cannot live inside `intrinsicGas()`, the seam it needs is designed deliberately rather than by duplicating the formula.
+- [x] Family 1 only: Osaka is re-admitted only if the EIP-7825 cap is handled too, and Prague is not re-admitted on the strength of EIP-7623 alone while EIP-7702 / EIP-2935 are unchecked. That is the half-truth ADR 0008 refuses.
+- [x] Family 2 only: the upstream fix is verified against the shipped artifact by re-running the probe, not taken from a changelog. (Delivered earlier by `upgrade-0-3-1-gate-eip-3860-and-readmit-pre-shanghai-forks`; not re-done here.)
+- [x] The entry moves between the two tables, and ADR 0008 gains a short amendment recording that the refusal was lifted and on what evidence.
+- [x] Cancun and Shanghai behaviour and the reference gas are demonstrably unchanged: `number()` 2446, `sumTo(2000)` 498689, `keccakLoop(2000)` 1107052 returning `0x26812edce879c319b6c7baf99bf3c2f65aa4b81b023d72cd6dfc7ac31caafe5a`.
 
 ## Blocked by
 
@@ -86,3 +86,30 @@ What replaces the obligation is a live guard: the suite measures the EIP-2028 bo
 > Do NOT fork `src/intrinsic-gas.ts`, and do NOT gate a term locally to work around an upstream mis-charge: on the revm path the engine subtracts what the node adds, so a local gate splits the two engines instead of fixing either.
 >
 > Done means: no hardfork the engine admits can have the node's estimate rejected by the engine that produced it, none is mis-costed against the protocol, and ADR 0008 records which refusal was lifted and why.
+
+## Outcome
+
+Family 1 is delivered: `prague` and `osaka` are in `REVM_SPEC_BY_HARDFORK`, `amsterdam` is the refused fork, and `createNode()` takes `hardfork: 'cancun' | 'prague' | 'osaka'` (default `'osaka'`). The entry condition that held is the third one listed above: the node gained a hardfork option, which also removes the unreachability argument that settled implement-vs-refuse the first time, since every new branch is now executed through the public API.
+
+Per criterion:
+
+- **The tripwire**, evaluated FIRST and recorded before implementing: `docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md`. Intrinsic gas does NOT move onto `ReadCallRequest`: neither the floor nor the cap is a term an engine subtracts, so the node applies both above the seam (read admission, estimate bounds, submit-time refusals) and the public seam types are unchanged.
+- **Clause (a), against revm**: `test/revm-engine.spec.ts` takes the calldata-heavy estimate and the default read budget from a real node ON EACH offered fork, on both engines, and feeds them to revm under that fork's spec; accepted on all seven admitted forks. Counter-examples: Cancun's estimate rejected by revm on Prague (`GasFloorMoreThanGasLimit`), and the Osaka read budget rejected on Osaka without the engine's `disableTxGasLimitCap` (`TxGasLimitGreaterThanCap`).
+- **Clause (b), against the protocol**: the five-term readings run at `prague` and `osaka` and agree. The floor, the cap and EIP-7702 are judged end to end by `test/hardforks.spec.ts` and `test/revm-hardforks.spec.ts` (one set of literals for both engines, per fork), by the conformance differential, whose trie-backed `runTx` reference now runs the battery's fork (Osaka), and by the vendored GeneralStateTests, now run for their Prague cases too on a `hardfork: 'prague'` node (10/10 roots on each engine).
+- **`src/intrinsic-gas.ts` stays shared and unforked**: the floor, the cap and the authorization charge are three new functions beside `intrinsicGas()`, gated on the node's `Common` like the EIP-3860 term.
+- **Osaka's cap and Prague's EIP-7702 / EIP-2935** are handled, not skipped: see the Decisions below and ADR 0008's fourth amendment.
+- **Reference gas unchanged**: `number()` 2446, `sumTo(2000)` 498689, `keccakLoop(2000)` 1107052 returning `0x26812edce879c319b6c7baf99bf3c2f65aa4b81b023d72cd6dfc7ac31caafe5a`, asserted by `packages/benchmarks` with the slim node on its new default (Osaka) against the Cancun backends.
+- **Bundle size**: the default entry grew 442.7 -> 448.1 KB raw, re-pinned in `packages/benchmarks/test/evm.spec.ts` with the reason.
+
+## Decisions
+
+1. **The default fork is `'osaka'`**, as asked: the latest fork the node can cost. A consumer who passes nothing now runs Osaka (a transaction above 16,777,216 gas is refused; calldata-heavy transactions cost the floor). `'cancun'` keeps the old behaviour. Minor bump in the changeset.
+2. **The option is a closed list of three**, not every fork `@ethereumjs/common` names: a fork is offered only where the node's own rules are implemented and tested on both engines. Earlier forks are reachable on the revm engine by hand (its table is unchanged below Cancun) but not through `createNode()`.
+3. **`eth_call` is not held to the EIP-7825 cap, as on geth**, on either engine: the default engine's `runCall` never enforced it, and the revm engine passes `revm-wasm`'s `disableTxGasLimitCap` on reads, which required upgrading to `revm-wasm@^0.5.0` (in `packages/webevm` and `packages/benchmarks`). The cap still binds transactions at submit and the `eth_estimateGas` search, as on geth. A first version held reads to the cap on both engines, because the switch did not exist yet; recorded in ADR 0015.
+4. **An estimate with an access or authorization list over-states by at most those lists' charges when the floor decides it**, identically on both engines, because the read request carries no lists and revm refuses a read whose own total is below the floor. Recorded in ADR 0015.
+5. **A read carrying an `authorizationList` runs with its delegations applied above the seam** (`withAuthorizations` in `src/node.ts`), following `runTx`'s validity rules, so an estimate executes the delegated code; without it the common self-sponsored or sponsored type-4 estimate would be a bare transfer. Not modelled: the 12,500 refund per existing authority and the warming of authorities, both in the safe direction.
+6. **EIP-2935 (and EIP-4788 before it) system writes are not performed.** `BLOCKHASH` is unchanged at Prague (the contract-backed one is EIP-7709, which no offered fork has), the node runs no block-start system call, and the history contract is absent unless a genesis puts it there, in which case it is never written. Documented on `NodeOptions.hardfork` and in the README. EIP-7002 / EIP-7251 requests are likewise never produced.
+7. **The fork is part of the chain**: `dumpState()` records it, `loadState()` refuses another fork's dump, and an unlabelled dump is Cancun's. A chain persisted by an earlier version therefore needs `hardfork: 'cancun'`, and otherwise fails construction naming the option, with the stored chain untouched (the alternative, silently starting fresh, would overwrite it on the next save).
+8. **Three refusals moved above the parser, in geth's words**: a gas limit above the cap (`transaction gas limit too high`, read off the RLP because `@ethereumjs/tx` throws in its constructor), a type-4 transaction before Prague (`transaction type not supported`), and a gas limit below the floor (`insufficient gas for floor data gas cost`, at submit, after the intrinsic check).
+9. **Test fixtures that ran on the node's implicit Cancun now say which fork they mean**: the old-dump fixtures load into `hardfork: 'cancun'` nodes, the block-gas-limit conformance step runs its two nodes on Prague (on Osaka the cap pre-empts any limit above 16,777,216) and gains an Osaka node asserting the cap refusal, the engine-seam stub node uses a 10M block gas limit for the same reason, and the root-update benchmark runs on Prague (its largest block is one 22.1M-gas transaction).
+10. **The fork probe in `test/helpers/revm-engine.ts` reads the fork of the nodes under test** (it is built with their options), which discharges `work/notes/observations/the-fork-probe-derives-createnodes-default-fork-not-the-node-under-test.md`, deleted in the same change.

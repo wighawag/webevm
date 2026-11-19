@@ -239,9 +239,13 @@ async function runWindows(makeEngine: EngineFactory | undefined) {
  * Both load into a node with a window, with history starting at the head.
  */
 async function runOldDumps(makeEngine: EngineFactory | undefined) {
+	// ON CANCUN, because an old dump IS a Cancun dump: it predates
+	// `SerializedState.hardfork`, when every node ran Cancun, and `loadState`
+	// refuses a dump from another fork than the loading node's.
 	const makeNode = async () =>
 		createNode({
 			chainId: CHAIN_ID,
+			hardfork: 'cancun',
 			engine: makeEngine ? await makeEngine() : undefined,
 			stateHistory: {blocks: 8},
 		});
