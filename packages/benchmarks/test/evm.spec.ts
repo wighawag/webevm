@@ -107,7 +107,17 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-FOUR TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-FIVE TIMES SINCE. Most recent first:
+ *
+ * 448.1 -> 449.7 KB raw / 135.2 -> 135.7 KB gzip, by `block-clock-cheats`: the
+ * node's clock and the time cheats that move it, under anvil's names and wire
+ * shapes (`evm_setNextBlockTimestamp`, `evm_increaseTime`, `evm_mine`,
+ * `anvil_mine` / `hardhat_mine`, `anvil_setBlockTimestampInterval` /
+ * `anvil_removeBlockTimestampInterval`; ADR 0016). The 1.6 KB is the clock's
+ * three settings and `plannedTimestamp` / `mineBlocks` in `src/node.ts`, the
+ * seven `request` cases with their refusal messages (which name the method and
+ * what it expected), and the quantity / later-than-head validators. No import
+ * was added. In the CORE graph because every node mines blocks.
  *
  * 442.7 -> 448.1 KB raw / 133.4 -> 135.2 KB gzip, by
  * `readmit-refused-hardforks-once-the-node-can-cost-them`: the node runs Prague
@@ -459,7 +469,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 448.1, gzipKB: 135.2};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 449.7, gzipKB: 135.7};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
