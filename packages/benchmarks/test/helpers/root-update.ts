@@ -120,6 +120,11 @@ async function makeWriterNode(
 ) {
 	const node: SlimNode = await createNode({
 		chainId: CHAIN_ID,
+		// PRAGUE, NOT THE DEFAULT OSAKA: the largest block below writes 1,000 fresh
+		// slots in ONE transaction (about 22.1M gas), and Osaka's EIP-7825 caps a
+		// transaction at 16,777,216. What is measured is the derived trie's update
+		// per changed slot, which no fork rule touches.
+		hardfork: 'prague',
 		senderMode: 'trusted',
 		miningConfig: {type: 'auto'},
 		initialBalances: {[DEPLOYER]: 10n ** 24n},

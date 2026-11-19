@@ -456,9 +456,42 @@ export interface EngineInfo {
 	readonly id: string;
 }
 
+/**
+ * The hardforks a node can run on: the ones whose gas rules the node implements
+ * end to end, on both engines. See {@link NodeOptions.hardfork}.
+ */
+export type NodeHardfork = 'cancun' | 'prague' | 'osaka';
+
 export interface NodeOptions {
 	/** EIP-155 chain id. Default 31337 (anvil/hardhat-style local). */
 	chainId?: number;
+	/**
+	 * The hardfork every block of this node runs under, its genesis included.
+	 * Default `'osaka'`, the latest fork the node can cost.
+	 *
+	 * - `'osaka'` (DEFAULT): Prague's rules plus EIP-7825's per-transaction gas
+	 *   cap of 16,777,216 (a transaction asking for more is refused at submit, and
+	 *   `eth_call` / `eth_estimateGas` never run above it), the `CLZ` opcode, the
+	 *   secp256r1 precompile and the repriced `MODEXP`.
+	 * - `'prague'`: EIP-7702 authorization lists (type-4 transactions), EIP-7623's
+	 *   calldata floor (charged on receipts, refused below at submit, and the
+	 *   least `eth_estimateGas` recommends) and the BLS12-381 precompiles.
+	 * - `'cancun'`: what every node ran before this option existed.
+	 *
+	 * WHAT NO FORK GETS HERE: block-level system operations. The node builds its
+	 * own blocks and runs no system call at their start or end, so EIP-4788's
+	 * beacon-root contract (Cancun) and EIP-2935's block-hash history contract
+	 * (Prague) are never written, and EIP-7002 / EIP-7251 requests are never
+	 * produced: a chain whose genesis carries none of those contracts behaves that
+	 * way on a real client too. `BLOCKHASH` is unaffected: it reads the node's own
+	 * blocks at every fork.
+	 *
+	 * The fork is part of the chain: a `dumpState` records it and `loadState`
+	 * refuses a dump taken on a different one (a dump that predates the field was
+	 * taken on Cancun), because a block's hash depends on which header fields its
+	 * fork defines. Anything outside {@link NodeHardfork} throws at construction.
+	 */
+	hardfork?: NodeHardfork;
 	/**
 	 * Whether the node computes a STATE ROOT. Default `false`. EVERY node runs on
 	 * the same state (our `SimpleStateManager` subclass: plain Maps, no trie);
@@ -728,6 +761,13 @@ export interface ServedPort {
 export interface SerializedState {
 	version: 1;
 	chainId: number;
+	/**
+	 * The hardfork the chain ran under ({@link NodeOptions.hardfork}). Written by
+	 * every dump; ABSENT on a dump that predates the field, which means `'cancun'`,
+	 * the only fork a node could run then. `loadState` refuses a dump whose fork is
+	 * not the loading node's.
+	 */
+	hardfork?: string;
 	/** The node's state, on every node: address -> hex-encoded account/code/storage.
 	 *  A `computeStateRoot` node's trie is not serialised; `loadState` rebuilds it. */
 	accounts: Record<string, string>; // addr -> rlp/hex account

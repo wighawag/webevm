@@ -107,7 +107,21 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-THREE TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-FOUR TIMES SINCE. Most recent first:
+ *
+ * 442.7 -> 448.5 KB raw / 133.4 -> 135.3 KB gzip, by
+ * `readmit-refused-hardforks-once-the-node-can-cost-them`: the node runs Prague
+ * and Osaka (`NodeOptions.hardfork`) and applies their gas rules itself, above
+ * the engine seam, so the code is in `src/node.ts` and `src/intrinsic-gas.ts`:
+ * the option's validation, EIP-7623's calldata floor and EIP-7825's cap in the
+ * read admission, the estimate's bounds and the submit-time refusals (each with
+ * its geth-worded message), a raw transaction's gas limit read off its RLP before
+ * parsing, the refusal of a type-4 transaction before Prague, the EIP-7702
+ * delegations a read carrying an `authorizationList` runs with, and the fork a
+ * dump records and `loadState` checks. `@ethereumjs/rlp` and the EIP-7702 helpers
+ * of `@ethereumjs/util` were already in the graph through `@ethereumjs/tx`. In
+ * the CORE graph because every node runs a fork, and the default one is now
+ * Osaka. Still zero bytes of `revm-wasm`.
  *
  * 442.6 -> 442.7 KB raw / 133.4 KB gzip (unchanged), by
  * `logs-carry-their-blocks-timestamp`: every RPC log carries `blockTimestamp`
@@ -444,7 +458,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 442.7, gzipKB: 133.4};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 448.5, gzipKB: 135.3};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

@@ -65,6 +65,9 @@ import {
 	setLengthLeft,
 	bigIntToBytes,
 	unpadBytes,
+	concatBytes,
+	equalsBytes,
+	eoaCode7702RecoverAuthority,
 } from '@ethereumjs/util';
 
 // `@ethereumjs/util`'s hexToBytes is typed to require a `0x${string}` literal.
@@ -90,10 +93,15 @@ import {serveProvider, type ServedProvider} from '@eip-1193/over-port';
 // so it has exactly one home. See ./intrinsic-gas.ts.
 import {
 	accessListGas,
+	authorizationListGas,
+	calldataFloorGas,
 	intrinsicGas as intrinsicGasOf,
+	transactionGasLimitCap,
 } from './intrinsic-gas.js';
+import {RLP} from '@ethereumjs/rlp';
 import {
 	RpcError,
+	type NodeHardfork,
 	type NodeOptions,
 	type ReadCallResult,
 	type Engine,
@@ -110,6 +118,11 @@ import {
 
 const ZERO_HASH = '0x' + '00'.repeat(32);
 const ZERO_ADDRESS = '0x' + '00'.repeat(20);
+/** EIP-7702: the code an authority holds once delegated is this, then 20 bytes. */
+const DELEGATION_PREFIX = Uint8Array.of(0xef, 0x01, 0x00);
+/** secp256k1's group order over two: EIP-2's bound on a signature's `s`. */
+const SECP256K1_N_DIV_2 =
+	0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
 /**
  * What a block's `logsBloom` reads as when it admits nothing: a block with no
  * logs, and the defensive fallback for a stored header carrying none at all
@@ -290,6 +303,29 @@ function deserializeChangeSet(record: SerializedHistoryBlock): ChangeSet {
 }
 function txHashOf(tx: TypedTransaction): string {
 	return hex(tx.hash());
+}
+
+/**
+ * The GAS LIMIT field of a raw transaction, read off its RLP without building
+ * the transaction, or `undefined` for bytes this cannot decode (the parser then
+ * produces the error it always has). Its position differs by envelope: a legacy
+ * transaction is `[nonce, gasPrice, gasLimit, ...]`, EIP-2930 (type 1) is
+ * `[chainId, nonce, gasPrice, gasLimit, ...]`, and every 1559-family envelope
+ * (types 2, 3 and 4) is `[chainId, nonce, maxPriorityFee, maxFee, gasLimit, ...]`.
+ */
+function wireGasLimit(raw: Uint8Array): bigint | undefined {
+	try {
+		if (raw.length === 0) return undefined;
+		const type = raw[0] >= 0xc0 ? 0 : raw[0];
+		if (type > 4) return undefined;
+		const fields = RLP.decode(type === 0 ? raw : raw.subarray(1));
+		if (!Array.isArray(fields)) return undefined;
+		const index = type === 0 ? 2 : type === 1 ? 3 : 4;
+		const field = fields[index];
+		return field instanceof Uint8Array ? bytesToBigInt(field) : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -519,6 +555,45 @@ function validateGenesisTimestamp(options: NodeOptions): bigint | undefined {
 	return value;
 }
 
+/**
+ * The `@ethereumjs/common` hardfork each {@link NodeHardfork} runs on. ALSO the
+ * list of what the option accepts: a fork is here because the node's own gas
+ * rules (`./intrinsic-gas.ts`, the read admission in `evmCall`, the estimate's
+ * bounds, the submit-time refusals) are implemented and tested for it on BOTH
+ * engines, not because `@ethereumjs/common` or revm has a name for it.
+ */
+const HARDFORK_OF: Readonly<Record<NodeHardfork, Hardfork>> = Object.freeze({
+	cancun: Hardfork.Cancun,
+	prague: Hardfork.Prague,
+	osaka: Hardfork.Osaka,
+});
+/** What a node runs when `hardfork` is absent: the latest fork it can cost. */
+const DEFAULT_HARDFORK: NodeHardfork = 'osaka';
+/** What a dump that predates `SerializedState.hardfork` was taken on. */
+const HARDFORK_OF_AN_UNLABELLED_DUMP: NodeHardfork = 'cancun';
+
+/**
+ * The node's hardfork, or a throw naming the option. A typo (`'Osaka'`,
+ * `'pectra'`) must not silently become the default: the fork decides what every
+ * transaction costs, and a node on a fork its caller did not ask for computes
+ * plausible numbers for the wrong chain.
+ */
+function validateHardfork(options: NodeOptions): NodeHardfork {
+	const value = options.hardfork as unknown;
+	if (value === undefined) return DEFAULT_HARDFORK;
+	if (typeof value === 'string' && Object.hasOwn(HARDFORK_OF, value))
+		return value as NodeHardfork;
+	throw new Error(
+		`webevm: hardfork must be one of ${Object.keys(HARDFORK_OF)
+			.map((h) => `'${h}'`)
+			.join(
+				', ',
+			)} (default '${DEFAULT_HARDFORK}'), got ${describeOption(value)}. ` +
+			`Those are the forks whose gas rules this node implements on every engine; ` +
+			`an earlier one is not offered, and a later one is not costed yet.`,
+	);
+}
+
 function describeOption(value: unknown): string {
 	try {
 		const s = JSON.stringify(value);
@@ -552,10 +627,11 @@ export async function createNodeWithInternals(
 	 * root. Only `true` turns it on (see {@link NodeOptions.computeStateRoot}).
 	 */
 	const computeStateRoot = options.computeStateRoot === true;
+	const hardfork = validateHardfork(options);
 
 	const common = new Common({
 		chain: {...Mainnet, chainId, name: 'webevm'},
-		hardfork: Hardfork.Cancun,
+		hardfork: HARDFORK_OF[hardfork],
 		customCrypto: {keccak256: (m: Uint8Array) => keccak_256(m)},
 	});
 
@@ -1255,6 +1331,8 @@ export async function createNodeWithInternals(
 	 */
 	function parseTx(rawHex: unknown, claimedFrom?: unknown): SubmittedTx {
 		const raw = hexToBytes(String(rawHex));
+		refuseIfTypeBeforeItsFork(raw);
+		refuseIfOverTransactionGasCap(raw);
 		if (claimedFrom === undefined) {
 			const tx = createTxFromRLP(raw, {common});
 			// THE CURVE STEP, ON THE ENGINE WHEN THE ENGINE HAS ONE. The DECISION
@@ -1288,6 +1366,52 @@ export async function createNodeWithInternals(
 		// rewritten to carry the claimed sender, because the sender does not live on it.
 		const tx = createTxFromRLP(raw, {common});
 		return {tx, raw, sender: from};
+	}
+
+	function refuseIfTypeBeforeItsFork(raw: Uint8Array): void {
+		// A TYPE-4 (EIP-7702) TRANSACTION ON A FORK BEFORE PRAGUE is refused in
+		// geth's words rather than reaching the caller as `@ethereumjs/tx`'s own
+		// "EIP-7702 not enabled on Common", with no RPC code. Same reason, and same
+		// place, as the cap refusal below: the parser throws before the node holds a
+		// transaction it could refuse in its own voice.
+		if (raw[0] === 4 && !common.isActivatedEIP(7702))
+			throw new RpcError(
+				-32000,
+				`transaction type not supported: a type-4 (EIP-7702) transaction needs Prague or later, ` +
+					`and this node runs '${hardfork}'. Create the node with hardfork: 'prague' or later to send one.`,
+			);
+	}
+
+	/**
+	 * REFUSE A TRANSACTION ABOVE EIP-7825's PER-TRANSACTION GAS CAP (Osaka on),
+	 * in geth's words, from its WIRE BYTES, before it is parsed.
+	 *
+	 * WHY BEFORE PARSING. `@ethereumjs/tx` enforces the cap in its constructor, so
+	 * a transaction above it never becomes a `TypedTransaction` the other refusals
+	 * could read: it would reach the caller as that library's own exception, with
+	 * no RPC error code and no mention of the node, which is the failure the
+	 * sibling refusals below exist to remove. So the gas limit is read off the RLP
+	 * here (the one field this needs, at its position for each envelope) and a
+	 * transaction over the cap is refused as a `-32000` naming both numbers. The
+	 * parser's own check stays as the backstop underneath, and revm's
+	 * `TxGasLimitGreaterThanCap` under that.
+	 *
+	 * A MALFORMED ENVELOPE IS LEFT TO THE PARSER: this reads only what it can read,
+	 * and anything it cannot decode falls through to `createTxFromRLP`, whose error
+	 * is the one such bytes have always produced.
+	 */
+	function refuseIfOverTransactionGasCap(raw: Uint8Array): void {
+		const cap = transactionGasLimitCap(common);
+		if (cap === undefined) return;
+		const gasLimit = wireGasLimit(raw);
+		if (gasLimit === undefined || gasLimit <= cap) return;
+		throw new RpcError(
+			-32000,
+			`transaction gas limit too high (cap: ${cap}, tx: ${gasLimit}). ` +
+				`From Osaka on, EIP-7825 caps the gas limit of a single transaction at ${cap}, whatever the block gas limit is, ` +
+				`so this transaction is REFUSED rather than mined. Sign it again with a gas limit of at most ${cap}; ` +
+				`eth_estimateGas never recommends more. To run without the cap, create the node with hardfork: 'prague'.`,
+		);
 	}
 
 	/**
@@ -1449,6 +1573,22 @@ export async function createNodeWithInternals(
 	function refuseIfBelowIntrinsicGas(tx: TypedTransaction): void {
 		const gasLimit = tx.gasLimit;
 		const minimum = tx.getIntrinsicGas();
+		// EIP-7623 (Prague on): the calldata floor is a SECOND lower bound on the
+		// limit, independent of the intrinsic one (`max(intrinsic, floor)` is what
+		// `runTx` validates against, and revm refuses with `GasFloorMoreThanGasLimit`).
+		// Checked AFTER the intrinsic bound so a limit below both is reported in the
+		// vocabulary it has always been, and in geth's words for the floor itself.
+		const floor = calldataFloorGas(tx.data, common);
+		if (gasLimit >= minimum && gasLimit < floor) {
+			throw new RpcError(
+				-32000,
+				`insufficient gas for floor data gas cost: have ${gasLimit}, want ${floor}. ` +
+					`From Prague on, EIP-7623 makes a transaction pay at least 21000 plus 10 gas per calldata token ` +
+					`(a zero byte is one token, a non-zero byte four), whatever it executes, so a gas limit below that ` +
+					`could not be charged and no block this node builds could contain it. Raise the gas limit to at least ` +
+					`${floor}; eth_estimateGas never recommends less.`,
+			);
+		}
 		if (gasLimit >= minimum) return;
 		throw new RpcError(
 			-32000,
@@ -2268,12 +2408,11 @@ export async function createNodeWithInternals(
 		//    `createNode({blockGasLimit: 10_000_000_000n})` silently buys every
 		//    unbudgeted `eth_call` a 300x longer runaway, and the browser tab that
 		//    locks up is nowhere near the option that caused it.
-		//  - The constant is also QUOTED as a fixed number by the revm engine's
-		//    hardfork refusals (`REVM_REFUSED_HARDFORKS.osaka` compares it against
-		//    EIP-7825's 16,777,216 cap in src/revm.ts), which a per-node value would
-		//    make wrong for some nodes and right for others.
 		// A caller who wants a bigger budget passes `gas` on the call itself, which is
 		// the standard `eth_call` field for exactly this and needs no configuration.
+		//
+		// FROM OSAKA ON THE DEFAULT IS SMALLER, and that is the fork's rule rather than
+		// a second knob: see the admission below.
 		//
 		// `budget` OVERRIDES BOTH, and exactly one caller passes it: the
 		// `estimateGas` search below, which is asking a different question from
@@ -2282,8 +2421,20 @@ export async function createNodeWithInternals(
 		// intrinsic cost the transaction pays first — so the search computes the
 		// budget itself and this function must not re-derive one from `params.gas`,
 		// which for `eth_estimateGas` is a CAP on the limit rather than a budget.
+		const intrinsic = intrinsicGasOf(data, to === undefined, common);
+		const cap = transactionGasLimitCap(common);
 		const gasLimit =
-			budget ?? (params.gas ? BigInt(params.gas) : DEFAULT_READ_BUDGET);
+			budget ??
+			(params.gas
+				? BigInt(params.gas)
+				: cap !== undefined && cap - intrinsic < DEFAULT_READ_BUDGET
+					? // Never negative: calldata whose intrinsic gas alone exceeds the cap
+						// gets a zero budget, and the admission below refuses its total.
+						cap > intrinsic
+						? cap - intrinsic
+						: 0n
+					: DEFAULT_READ_BUDGET);
+		refuseUnadmissibleRead(gasLimit + intrinsic, data, cap);
 		return engine.call({
 			from,
 			to,
@@ -2292,6 +2443,186 @@ export async function createNodeWithInternals(
 			gasLimit,
 			block,
 		});
+	}
+
+	/**
+	 * RUN A READ WITH ITS EIP-7702 AUTHORIZATION LIST APPLIED, the way the mined
+	 * transaction would apply it before its first opcode, so that `eth_call` and
+	 * `eth_estimateGas` execute the DELEGATED code a type-4 transaction runs.
+	 *
+	 * WHY THE NODE DOES IT, ABOVE THE SEAM. A read request carries no authorization
+	 * list (`ReadCallRequest` has none, exactly as it has no access list), so an
+	 * engine cannot apply one. Leaving the list out is not a small error: the usual
+	 * type-4 transaction is sent to its own authority, which holds NO code until the
+	 * list delegates it, so the read would execute nothing and the estimate would
+	 * come back as a bare transfer, a gas limit at which the real transaction runs
+	 * out of gas. So the delegations are written into a checkpoint the read runs
+	 * in and reverts, through the same state the overrides use, which makes them
+	 * identical on every engine.
+	 *
+	 * THE RULES ARE EIP-7702's, as `@ethereumjs/vm`'s `runTx` applies them, in list
+	 * order: an entry is SKIPPED (never an error) when its chain id is neither 0 nor
+	 * this chain's, its nonce cannot be bumped, its `s` is high or its `yParity` is
+	 * not 0/1, it does not recover, the authority holds code that is not a
+	 * delegation, or the authority's nonce is not the entry's (one more than the
+	 * account's when the authority is the caller, whose own nonce the transaction
+	 * bumps first). A valid entry bumps the authority's nonce and sets its code to
+	 * `0xef0100 || address`, or clears it for the zero address.
+	 *
+	 * WHAT IT DOES NOT MODEL, both in the safe direction for an estimate: the
+	 * 12,500 refunded per authority that already existed (the charge in
+	 * {@link authorizationListGas} is the full 25,000), and the warming of each
+	 * authority (a read touching one pays the cold price the mined transaction does
+	 * not).
+	 */
+	async function withAuthorizations<T>(
+		p: any,
+		method: string,
+		read: () => Promise<T>,
+	): Promise<T> {
+		const list = p.authorizationList;
+		if (list == null) return read();
+		if (!Array.isArray(list))
+			throw new RpcError(
+				-32602,
+				`invalid authorizationList for ${method}: expected an array of {chainId, address, nonce, yParity, r, s}.`,
+			);
+		if (!common.isActivatedEIP(7702))
+			throw new RpcError(
+				-32602,
+				`authorizationList is an EIP-7702 field, and this node runs '${hardfork}', which predates it. ` +
+					`Create the node with hardfork: 'prague' or later, or omit the field.`,
+			);
+		if (!p.to)
+			throw new RpcError(
+				-32000,
+				`EIP-7702 transaction cannot be used to create contract: a request carrying an authorizationList must name a \`to\`.`,
+			);
+		if (list.length === 0) return read();
+		const caller = p.from
+			? createAddressFromString(p.from)
+			: createAddressFromString(ZERO_ADDRESS);
+		const quantity = (v: unknown, what: string): bigint => {
+			if (typeof v !== 'string' || !/^0x[0-9a-fA-F]*$/.test(v))
+				throw new RpcError(
+					-32602,
+					`invalid authorizationList entry for ${method}: ${what} must be a hex quantity, got ${JSON.stringify(v)}.`,
+				);
+			return v === '0x' ? 0n : BigInt(v);
+		};
+		await sm.checkpoint();
+		try {
+			for (const entry of list) {
+				if (entry === null || typeof entry !== 'object')
+					throw new RpcError(
+						-32602,
+						`invalid authorizationList entry for ${method}: expected {chainId, address, nonce, yParity, r, s}.`,
+					);
+				const e = entry as Record<string, unknown>;
+				const entryChainId = quantity(e.chainId, 'chainId');
+				const entryNonce = quantity(e.nonce, 'nonce');
+				// viem sends `yParity`; an older shape carries `v` (27/28 or 0/1).
+				const parityRaw =
+					e.yParity !== undefined
+						? quantity(e.yParity, 'yParity')
+						: quantity(e.v, 'yParity');
+				const yParity = parityRaw >= 27n ? parityRaw - 27n : parityRaw;
+				const r = quantity(e.r, 'r');
+				const s = quantity(e.s, 's');
+				if (typeof e.address !== 'string')
+					throw new RpcError(
+						-32602,
+						`invalid authorizationList entry for ${method}: address must be a 20-byte hex string.`,
+					);
+				const target = createAddressFromString(e.address);
+				if (entryChainId !== 0n && entryChainId !== BigInt(chainId)) continue;
+				if (entryNonce >= 2n ** 64n - 1n) continue;
+				if (s > SECP256K1_N_DIV_2 || yParity > 1n) continue;
+				let authority: Address;
+				try {
+					authority = eoaCode7702RecoverAuthority([
+						bigIntToBytes(entryChainId),
+						target.bytes,
+						bigIntToBytes(entryNonce),
+						bigIntToBytes(yParity),
+						bigIntToBytes(r),
+						bigIntToBytes(s),
+					]);
+				} catch {
+					continue;
+				}
+				const account = (await sm.getAccount(authority)) ?? new Account();
+				if (account.isContract()) {
+					const code = await sm.getCode(authority);
+					if (!equalsBytes(code.subarray(0, 3), DELEGATION_PREFIX)) continue;
+				}
+				const expected = authority.equals(caller)
+					? account.nonce + 1n
+					: account.nonce;
+				if (entryNonce !== expected) continue;
+				account.nonce += 1n;
+				await sm.putAccount(authority, account);
+				await sm.putCode(
+					authority,
+					target.isZero()
+						? new Uint8Array()
+						: concatBytes(DELEGATION_PREFIX, target.bytes),
+				);
+			}
+			return await read();
+		} finally {
+			await sm.revert();
+		}
+	}
+
+	/**
+	 * THE READ IS A VALID TRANSACTION, GAS-WISE, UNDER THIS FORK, or it is refused
+	 * here, in geth's words, before any engine sees it.
+	 *
+	 * `total` is what the read would carry as a transaction's gas limit: the
+	 * execution budget plus the intrinsic gas an engine that charges it (revm)
+	 * adds back. From Prague on it must reach EIP-7623's calldata floor, and from
+	 * Osaka on it may not exceed EIP-7825's cap. revm ENFORCES both on a read
+	 * (`GasFloorMoreThanGasLimit`, `TxGasLimitGreaterThanCap`) and `runCall` on the
+	 * default engine enforces neither, so without this the same read would run on
+	 * one engine and be refused on the other. The node therefore answers it for
+	 * both, which is the same move it makes for a transaction's validity
+	 * (`refuseIfBelowIntrinsicGas` and friends), and the reason the floor and the
+	 * cap never cross the engine seam: see
+	 * `docs/adr/0015-the-forks-gas-rules-on-the-read-path-are-the-nodes-admission-and-intrinsic-gas-stays-off-the-seam.md`.
+	 *
+	 * STRICTER THAN GETH ON ONE POINT, deliberately and identically on both
+	 * engines: geth lifts the cap for `eth_call`, and `revm-wasm` has no switch to
+	 * lift it, so a read above it is refused here rather than served by one engine
+	 * only. The default read budget is shrunk to fit under it instead (`evmCall`),
+	 * so only a caller who passes an explicit `gas` meets this.
+	 *
+	 * `eth_estimateGas` never trips it: its search only probes limits that satisfy
+	 * both bounds (see {@link estimateGas}).
+	 */
+	function refuseUnadmissibleRead(
+		total: bigint,
+		data: Uint8Array,
+		cap: bigint | undefined,
+	): void {
+		if (cap !== undefined && total > cap)
+			throw new RpcError(
+				-32000,
+				`transaction gas limit too high (cap: ${cap}, tx: ${total}). ` +
+					`From Osaka on, EIP-7825 caps a single transaction's gas limit at ${cap}, and this node holds a read to the same cap on every engine ` +
+					`(the figure is the call's gas plus the intrinsic gas a transaction with its calldata pays). ` +
+					`Pass a smaller \`gas\`, or omit it: the default budget fits under the cap.`,
+			);
+		const floor = calldataFloorGas(data, common);
+		if (total < floor)
+			throw new RpcError(
+				-32000,
+				`insufficient gas for floor data gas cost: have ${total}, want ${floor}. ` +
+					`From Prague on, EIP-7623 makes a transaction pay at least 21000 plus 10 gas per calldata token, ` +
+					`so a call carrying this calldata needs a gas limit of at least ${floor} ` +
+					`(the figure is the call's gas plus the intrinsic gas a transaction with its calldata pays). ` +
+					`Pass a larger \`gas\`, or omit it.`,
+			);
 	}
 
 	/**
@@ -2368,8 +2699,27 @@ export async function createNodeWithInternals(
 	async function estimateGas(p: any, block: Block): Promise<bigint> {
 		const dataHex: string = p.data ?? p.input ?? '0x';
 		const isCreate = !p.to;
-		const overhead =
-			intrinsicGas(dataHex, isCreate, common) + accessListGas(p.accessList);
+		const intrinsic = intrinsicGas(dataHex, isCreate, common);
+		// Everything the transaction pays before its first opcode that the engine's
+		// read does NOT: the request's EIP-2930 access list and its EIP-7702
+		// authorization list, charged here because the read request carries neither.
+		const lists =
+			accessListGas(p.accessList) + authorizationListGas(p.authorizationList);
+		const overhead = intrinsic + lists;
+		// THE LOWEST LIMIT WORTH PROBING, and why it can sit above `overhead` (Prague
+		// on). EIP-7623's floor is a bound on the limit, so no limit below it is a
+		// transaction at all. And the read underneath carries no lists, so its own
+		// total is `limit - lists`, which must ALSO reach the floor or revm refuses
+		// the read (`GasFloorMoreThanGasLimit`) where the default engine would run it.
+		// So the search starts at `floor + lists`: exact without lists, and with them
+		// at most `lists` above the protocol's `max(overhead, floor)`, the same on both
+		// engines and in the safe direction. ADR 0015 records the trade.
+		const floor = calldataFloorGas(
+			hexToBytes(dataHex.startsWith('0x') ? dataHex : '0x' + dataHex),
+			common,
+		);
+		const minimum =
+			floor === 0n || floor + lists <= overhead ? overhead : floor + lists;
 
 		// THE UPPER BOUND, and why it is capped at the block gas limit even when the
 		// caller named a larger `gas`: a limit above it is REFUSED at submit by
@@ -2382,26 +2732,41 @@ export async function createNodeWithInternals(
 		// deliberately (historical-eth-call): the number is for a transaction to be
 		// SUBMITTED now, and what it meets is the limit of the blocks this node
 		// mines, whatever K's was. `block` only decides what the probes execute in.
+		//
+		// FROM OSAKA ON IT IS CAPPED AGAIN, at EIP-7825's per-transaction limit, for
+		// the same reason: a transaction above it is refused at submit
+		// (`refuseIfOverTransactionGasCap`). geth's estimator applies the same cap.
 		const supplied = p.gas != null ? BigInt(p.gas) : undefined;
+		const txCap = transactionGasLimitCap(common);
+		const ceiling =
+			txCap !== undefined && txCap < minedBlockGasLimit
+				? txCap
+				: minedBlockGasLimit;
 		const cap =
-			supplied === undefined || supplied > minedBlockGasLimit
-				? minedBlockGasLimit
-				: supplied;
+			supplied === undefined || supplied > ceiling ? ceiling : supplied;
 
 		// Nothing to search: the cap cannot pay for the transaction's own bytes, so
 		// no limit within it reaches an opcode. Said in the vocabulary of the refusal
 		// that would meet such a limit at submit, and NOT as `execution reverted`:
 		// nothing executed, and a client reading a revert here would look for return
 		// data that does not exist.
-		if (cap < overhead) {
+		// WHICH ALLOWANCE IT WAS, for the two refusals below: the caller's `gas`, the
+		// block gas limit (a node option), or EIP-7825's cap (the fork's rule, which
+		// no option raises short of choosing another fork).
+		const allowanceWasSupplied = supplied !== undefined && supplied <= ceiling;
+		const allowanceIsTheTxCap =
+			!allowanceWasSupplied && txCap !== undefined && ceiling === txCap;
+		if (cap < minimum) {
 			throw new RpcError(
 				-32000,
-				`gas required exceeds allowance (${cap}): this transaction pays ${overhead} gas ` +
+				`gas required exceeds allowance (${cap}): this transaction pays ${minimum} gas ` +
 					`for its 21000 base, its calldata and its access list before its first opcode ` +
 					`runs, so no gas limit within the allowance could start it. ` +
-					(supplied !== undefined && supplied <= minedBlockGasLimit
+					(allowanceWasSupplied
 						? `The allowance is the \`gas\` you passed on the request; raise it or omit it.`
-						: `The allowance is this node's block gas limit; raise it with createNode({blockGasLimit: ...}).`),
+						: allowanceIsTheTxCap
+							? `The allowance is EIP-7825's per-transaction gas cap, which this fork enforces on every transaction; no node option raises it.`
+							: `The allowance is this node's block gas limit; raise it with createNode({blockGasLimit: ...}).`),
 			);
 		}
 
@@ -2445,10 +2810,12 @@ export async function createNodeWithInternals(
 						`allowance and still did not succeed, so it needs more gas than the allowance ` +
 						`permits (or it cannot succeed at all — an invalid opcode also spends everything). ` +
 						`Nothing reverted, so there is no revert reason to decode. ` +
-						(supplied !== undefined && supplied <= minedBlockGasLimit
+						(allowanceWasSupplied
 							? `The allowance is the \`gas\` you passed on the request; raise it or omit it.`
-							: `The allowance is this node's block gas limit, which is also the most a transaction ` +
-								`it mines may ask for; raise it with createNode({blockGasLimit: ...}). `) +
+							: allowanceIsTheTxCap
+								? `The allowance is EIP-7825's per-transaction gas cap, which this fork enforces on every transaction; no node option raises it. `
+								: `The allowance is this node's block gas limit, which is also the most a transaction ` +
+									`it mines may ask for; raise it with createNode({blockGasLimit: ...}). `) +
 						`The engine reported: ${String(top.error)}.`,
 				);
 			}
@@ -2477,7 +2844,11 @@ export async function createNodeWithInternals(
 		// 2) WHAT IT CONSUMED, and the probe that tests whether consumption is also a
 		// workable limit. `consumed >= cap` means the request needs everything the
 		// cap allows, and the cap has just been proven to work, so it IS the answer.
-		const consumed = top.executionGasUsed + overhead;
+		// RAISED TO THE SEARCH'S `minimum` when the floor binds (Prague on): a request
+		// whose execution is cheap next to its calldata is charged the floor, not its
+		// consumption, and a limit below the floor is no transaction at all.
+		const measured = top.executionGasUsed + overhead;
+		const consumed = measured < minimum ? minimum : measured;
 		if (consumed >= cap) return cap;
 		if (!(await probe(consumed)).error) return consumed;
 
@@ -2556,7 +2927,11 @@ export async function createNodeWithInternals(
 				];
 				const block = blockStore.get(k ?? latestNumber)!.block;
 				const r = await pureRead(() =>
-					withStateEntries(entries, () => evmCall(params[0] ?? {}, block)),
+					withStateEntries(entries, () =>
+						withAuthorizations(params[0] ?? {}, 'eth_call', () =>
+							evmCall(params[0] ?? {}, block),
+						),
+					),
 				);
 				if (r.error)
 					throw new RpcError(3, 'execution reverted', hex(r.returnValue));
@@ -2578,7 +2953,9 @@ export async function createNodeWithInternals(
 				return numHex(
 					await pureRead(() =>
 						withStateEntries(entries, () =>
-							estimateGas(params[0] ?? {}, block),
+							withAuthorizations(params[0] ?? {}, 'eth_estimateGas', () =>
+								estimateGas(params[0] ?? {}, block),
+							),
 						),
 					),
 				);
@@ -2619,7 +2996,12 @@ export async function createNodeWithInternals(
 						? BigInt(p.gas)
 						: await pureRead(() =>
 								estimateGas(
-									{...p, gas: undefined, accessList: undefined},
+									{
+										...p,
+										gas: undefined,
+										accessList: undefined,
+										authorizationList: undefined,
+									},
 									blockStore.get(latestNumber)!.block,
 								),
 							);
@@ -3025,6 +3407,7 @@ export async function createNodeWithInternals(
 		return {
 			version: 1,
 			chainId,
+			hardfork,
 			accounts,
 			code,
 			storage,
@@ -3106,6 +3489,25 @@ export async function createNodeWithInternals(
 	}
 
 	async function loadState(state: SerializedState): Promise<void> {
+		// THE FORK IS PART OF THE CHAIN, so a dump from another one is REFUSED, before
+		// anything is written. A block's hash covers the header fields its fork
+		// defines (Prague adds `requestsHash`), and the headers below are rebuilt
+		// with THIS node's `Common`, so a Cancun chain loaded into a Prague node
+		// would come back with every block hash changed and a next block naming a
+		// parent no lookup resolves. An unlabelled dump predates the field, when
+		// every node ran Cancun. This also guards a persisted chain: a node restored
+		// from IndexedDB after `hardfork` changed fails to come up, naming the option,
+		// and leaves the stored chain untouched.
+		const dumpedFork = state.hardfork ?? HARDFORK_OF_AN_UNLABELLED_DUMP;
+		if (dumpedFork !== hardfork)
+			throw new Error(
+				`webevm: this state was dumped from a node running hardfork '${dumpedFork}'` +
+					(state.hardfork === undefined
+						? ` (it carries no hardfork, so it predates the option, when every node ran Cancun)`
+						: ``) +
+					` and this node runs '${hardfork}'. A chain's block hashes depend on its fork, so it ` +
+					`cannot be loaded into a node on another one. Create the node with hardfork: '${dumpedFork}' to load it.`,
+			);
 		// Rehydrate accounts/code/storage directly into SimpleStateManager.
 		for (const [addr, accHex] of Object.entries(state.accounts)) {
 			const acc = createAccountFromRLP(hexToBytes(accHex));

@@ -174,8 +174,8 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 	// of those four clauses false.
 	expect(c.valueSeamOutcomes.default).toBe(c.valueSeamExpected);
 	expect(c.valueSeamOutcomes.revm).toBe(c.valueSeamExpected);
-	// ...on the fork the NODE pins, read off a real `createNode()` rather than
-	// named a second time here — and that fork must be one the engine ADMITS, or
+	// ...on the fork the nodes under test run, read off a real `createNode()` built
+	// with their options rather than named a second time here; and that fork must be one the engine ADMITS, or
 	// the revm half of the probe could not have connected at all.
 	expect(c.seamHardforkIsAdmitted).toBe(true);
 	expect(c.admittedHardforks).toContain(c.seamHardfork);
@@ -188,7 +188,7 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 	// so an unrelated error cannot be mistaken for an unaffordable transfer.
 	expect(c.lackOfFundsVocabularyRejects).toBe(true);
 	// ...and the NEGATIVE CONTROL those bars issue is bytecode every admitted fork
-	// can actually run, not only the one the node pins today: an invalid opcode
+	// can actually run, not only the one the nodes under test run: an invalid opcode
 	// fails a call too, so a control a fork cannot execute would pass as the
 	// control working while measuring nothing.
 	expect(Object.keys(c.controlAtFork).length).toBeGreaterThan(1);
@@ -240,30 +240,34 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 	expect(c.unboundCallRefusal).toContain('intrinsic gas');
 	expect(c.unboundCallRefusal).toMatch(/createNode/i);
 
-	// a HARDFORK the engine cannot cost is refused the same way. The node runs
-	// Cancun, so this guard is unreachable through `createNode()` — which is the
-	// point: it fires the day the node's hardfork moves, instead of the node
-	// quietly charging pre-Prague intrinsic gas against post-Prague enforcement
-	// (above the admitted range) or post-Shanghai intrinsic gas on a pre-Shanghai
-	// fork (below it).
-	expect(c.refusedHardforks).toEqual(['prague', 'osaka']);
-	expect(c.hardforkRefusals.prague).not.toBe('DID_NOT_THROW');
-	expect(c.hardforkRefusals.prague).toContain('EIP-7623');
-	expect(c.hardforkRefusals.prague).toContain('intrinsic-gas.ts');
-	expect(c.hardforkRefusals.osaka).not.toBe('DID_NOT_THROW');
-	expect(c.hardforkRefusals.osaka).toContain('EIP-7825');
+	// a HARDFORK the engine cannot cost is refused the same way. Every fork the
+	// node offers is admitted (below), so this guard is unreachable through
+	// `createNode()`, which is the point: it fires the day the node offers a fork
+	// this engine has not been costed for, instead of the node quietly charging
+	// Osaka's intrinsic gas against Amsterdam's enforcement (above the admitted
+	// range) or post-Shanghai intrinsic gas on a pre-Shanghai fork (below it).
+	expect(c.refusedHardforks).toEqual(['amsterdam']);
+	expect(c.hardforkRefusals.amsterdam).not.toBe('DID_NOT_THROW');
+	expect(c.hardforkRefusals.amsterdam).toContain('EIP-8037');
+	expect(c.hardforkRefusals.amsterdam).toContain('intrinsic-gas.ts');
 	for (const message of Object.values(c.hardforkRefusals) as string[]) {
 		// every refusal names the ADR a reader should go and read
 		expect(message).toContain('docs/adr/0008-');
 	}
-	// ...and the fork the node actually runs is untouched
-	expect(c.cancunAdmitted).toBe(true);
+	// ...and every fork the node offers is admitted
+	expect(c.nodeForksAdmitted).toEqual({
+		cancun: true,
+		prague: true,
+		osaka: true,
+	});
 	expect(c.admittedHardforks).toEqual([
 		'berlin',
 		'london',
 		'paris',
 		'shanghai',
 		'cancun',
+		'prague',
+		'osaka',
 	]);
 
 	// ...AND THAT GUARD CANNOT BE ASSIGNED AWAY. The tables are public so "which
@@ -272,7 +276,7 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 	// outside re-admitted a fork whose estimate revm itself rejects. Measured as a
 	// runtime property (a type cannot be measured): both tables report frozen, the
 	// two edits a re-admitter would make leave them exactly as they were, and the
-	// construction guard still refuses `prague` afterwards in the same words.
+	// construction guard still refuses `amsterdam` afterwards in the same words.
 	expect(c.tablesFrozen).toBe(true);
 	expect(c.admittedAfterEditAttempt).toEqual([
 		'berlin',
@@ -280,26 +284,55 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 		'paris',
 		'shanghai',
 		'cancun',
+		'prague',
+		'osaka',
 	]);
-	expect(c.refusedAfterEditAttempt).toEqual(['prague', 'osaka']);
-	expect(c.pragueRefusalAfterEditAttempt).toBe(c.hardforkRefusals.prague);
-	expect(c.pragueRefusalAfterEditAttempt).toContain('EIP-7623');
+	expect(c.refusedAfterEditAttempt).toEqual(['amsterdam']);
+	expect(c.refusalAfterEditAttempt).toBe(c.hardforkRefusals.amsterdam);
+	expect(c.refusalAfterEditAttempt).toContain('EIP-8037');
 	// ...and the write FAILS AT THE CONSUMER'S OWN LINE, which is the half a
 	// consumer is told about and the half the readings above cannot see: a
 	// sloppy-mode caller gets the unchanged table WITHOUT the throw, so neither
 	// implies the other. These modules are ESM and therefore strict, so both edits
 	// must throw here. The message is the browser's own words (V8 and JSC word it
 	// differently), so what is pinned is that it threw, not what it said.
-	expect(c.tableEditOutcomes['admit prague']).toMatch(/^threw: /);
-	expect(c.tableEditOutcomes['drop the prague refusal']).toMatch(/^threw: /);
+	expect(c.tableEditOutcomes['admit amsterdam']).toMatch(/^threw: /);
+	expect(c.tableEditOutcomes['drop the amsterdam refusal']).toMatch(/^threw: /);
 
 	// THE INVARIANT, asserted against the engine itself: on every hardfork the
 	// table admits, the number `eth_estimateGas` returned for a calldata-heavy
-	// call is a gas limit revm RUNS, and so is the node's default read budget.
-	// viem uses an estimate as the transaction's gas limit, so a rejection here
-	// would reach the user as "out of gas" with no warning.
+	// call is a gas limit revm RUNS, and so is the node's default read budget,
+	// each taken from a node ON THAT FORK (the Cancun node for the forks the node
+	// does not offer). viem uses an estimate as the transaction's gas limit, so a
+	// rejection here would reach the user as "out of gas" with no warning.
 	expect(c.heavyEstimatesMatch).toBe(true);
-	expect(BigInt(c.heavyEstimates.revm)).toBe(21_000n + 1000n * 16n);
+	// 1000 non-zero bytes: 21000 + 16 per byte before Prague, and EIP-7623's
+	// floor of 21000 + 10 * 4000 tokens from Prague on (the call executes nothing).
+	expect(c.heavyEstimatesByFork).toEqual({
+		cancun: {default: '0x9088', revm: '0x9088'},
+		prague: {default: '0xee48', revm: '0xee48'},
+		osaka: {default: '0xee48', revm: '0xee48'},
+	});
+	expect(BigInt(c.heavyEstimatesByFork.cancun.revm)).toBe(
+		21_000n + 1000n * 16n,
+	);
+	expect(BigInt(c.heavyEstimatesByFork.prague.revm)).toBe(
+		21_000n + 10n * 4000n,
+	);
+	// ...the default read budget is 30M until Osaka, and the EIP-7825 cap less the
+	// read's intrinsic gas from Osaka on, so the read's TOTAL is exactly the cap...
+	expect(c.readBudgetByFork).toEqual({
+		cancun: '30000000',
+		prague: '30000000',
+		osaka: String(16_777_216n - (21_000n + 1000n * 16n)),
+	});
+	// ...and an ordinary `eth_call` RUNS on revm on every fork the node offers,
+	// which on Osaka is the failure the cap used to cause on every read.
+	expect(c.heavyCallOnRevmByFork).toEqual({
+		cancun: 'ran',
+		prague: 'ran',
+		osaka: 'ran',
+	});
 	for (const hardfork of c.admittedHardforks as string[]) {
 		expect(`${hardfork}: ${c.estimateVerdicts[hardfork]}`).toBe(
 			`${hardfork}: accepted`,
@@ -308,10 +341,10 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 			`${hardfork}: accepted`,
 		);
 	}
-	// ...and the refusals are load-bearing: the SAME numbers are rejected on the
-	// specs the table does not admit.
-	expect(c.estimateOnPrague).toContain('GasFloorMoreThanGasLimit');
-	expect(c.budgetOnOsaka).toContain('TxGasLimitGreaterThanCap');
+	// ...and the fork rules are load-bearing: the CANCUN figures, which ignore
+	// both, are rejected by revm on the two forks that brought them.
+	expect(c.cancunEstimateOnPrague).toContain('GasFloorMoreThanGasLimit');
+	expect(c.cancunBudgetOnOsaka).toContain('TxGasLimitGreaterThanCap');
 
 	// AND THE PROTOCOL GETS A VOTE, because the node and revm agree about
 	// intrinsic gas by construction (the engine subtracts what the node adds), so
@@ -421,7 +454,7 @@ test('revm engine: same results + same gas as @ethereumjs/evm, on the node own s
 			`${hardfork}: {"default":"53298","revm":"53298"}`,
 		);
 	}
-	for (const hardfork of ['shanghai', 'cancun']) {
+	for (const hardfork of ['shanghai', 'cancun', 'prague', 'osaka']) {
 		expect(`${hardfork}: ${JSON.stringify(c.createEstimates[hardfork])}`).toBe(
 			`${hardfork}: {"default":"53302","revm":"53302"}`,
 		);

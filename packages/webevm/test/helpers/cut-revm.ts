@@ -110,6 +110,10 @@
  *                      (helpers/genesis-timestamp.ts): block 0's pinned timestamp
  *                      is what `TIMESTAMP` reads with revm executing, and the
  *                      same chain in different seconds dumps byte-identically
+ *   - 'hardforks'   : the SHARED hardfork battery (helpers/hardforks.ts): Cancun,
+ *                      Prague and Osaka, with revm executing each fork's rules
+ *                      (the calldata floor, set-code transactions, CLZ and the
+ *                      Osaka precompiles) to the default engine's literals
  */
 import type {
 	CodeUnderTest,
@@ -118,6 +122,7 @@ import type {
 } from 'playwright-browser-harness/contract';
 import {captureEnv} from 'playwright-browser-harness/contract';
 import {runRevmEngineChecks} from './revm-engine.js';
+import {runHardforkChecks} from './hardforks.js';
 import {runRevmConformance} from './revm-conformance.js';
 import {runRevmTrustedSender} from './revm-trusted-sender.js';
 import {runRevmSenderRecovery} from './revm-sender-recovery.js';
@@ -391,7 +396,8 @@ const cut: CodeUnderTest = {
 			ctx.params.mode === 'trie-derived' ||
 			ctx.params.mode === 'storage-collision' ||
 			ctx.params.mode === 'statetest' ||
-			ctx.params.mode === 'genesis-timestamp'
+			ctx.params.mode === 'genesis-timestamp' ||
+			ctx.params.mode === 'hardforks'
 		) {
 			try {
 				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
@@ -402,6 +408,8 @@ const cut: CodeUnderTest = {
 					results.revmStorageCollision = await runStorageCollisionChecks({
 						makeEngine,
 					});
+				else if (ctx.params.mode === 'hardforks')
+					results.revmHardforks = await runHardforkChecks({makeEngine});
 				else if (ctx.params.mode === 'genesis-timestamp')
 					results.revmGenesisTimestamp = await runGenesisTimestampChecks({
 						makeEngine,
