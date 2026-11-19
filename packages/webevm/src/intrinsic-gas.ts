@@ -79,7 +79,8 @@
  * The term is NOT fork-gated on purpose: no admitted fork predates Istanbul and
  * none can, because a fork in neither of ./revm.ts's two tables is refused by the
  * "no revm spec is known" guard, so a gate would be arithmetic nothing can reach
- * (the same argument that keeps the EIP-7623 floor out). What stands in its place
+ * (the argument that once kept the EIP-7623 floor out, before a hardfork option
+ * made it reachable). What stands in its place
  * is a measurement rather than a comment: the suite measures this term either
  * side of the Istanbul boundary (`petersburg` and `istanbul`), so re-admitting a
  * pre-Istanbul fork turns that measured disagreement into a failing build. If one

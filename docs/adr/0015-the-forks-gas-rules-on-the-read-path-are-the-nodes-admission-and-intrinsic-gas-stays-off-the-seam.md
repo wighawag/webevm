@@ -14,9 +14,9 @@ The floor is not a term of that conversion. It is a lower bound on the transacti
 
 - **Every read it hands an engine reaches the floor.** Its total (execution budget plus intrinsic gas) is at least the floor, or the read is refused in geth's words before an engine sees it, so the answer is the same on both engines. revm's own refusal stays as the backstop underneath, as it already is for the transaction path.
 - **The cap is a rule about TRANSACTIONS, and a read is not one.** geth skips it for `eth_call` and keeps it for `eth_estimateGas`, and `@ethereumjs/evm`'s `runCall` never enforced it. So the node does not hold a read to it, and the revm engine lifts it on its reads with `revm-wasm`'s `disableTxGasLimitCap` (0.5.0), the same kind of simulation switch as `disableBlockGasLimit`: engine vocabulary, kept inside the engine's `call` rather than placed on the seam's request, and refused by the binding on a committing execution. The default read budget stays 30,000,000 on every fork.
-- **`eth_estimateGas` searches only valid gas limits**: its lower bound is the larger of the intrinsic charges and the floor, and its upper bound is the block gas limit capped by EIP-7825 (which is what geth's estimator does from Osaka on).
+- **`eth_estimateGas` searches only valid gas limits**: its lower bound is the larger of the intrinsic charges and the floor plus the request's list charges (see Consequences for why the lists are added to the floor), and its upper bound is the block gas limit capped by EIP-7825 (which is what geth's estimator does from Osaka on).
 - **A transaction below the floor, or above the cap, is refused at submit**, beside the existing below-intrinsic and over-block-gas-limit refusals, in geth's vocabulary.
-- **A read carrying an EIP-7702 authorization list is charged for it and executes with its delegations applied**, through the same state-entry mechanism the node already uses for state overrides, so neither engine sees the list.
+- **A read carrying an EIP-7702 authorization list is charged for it and executes with its delegations applied**, written into a checkpoint the read runs in and reverts (as state overrides are), so neither engine sees the list.
 
 ## Considered options
 

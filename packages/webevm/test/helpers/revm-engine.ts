@@ -278,7 +278,7 @@ const commonOn = (hardfork: string) =>
 
 /**
  * The forks `createNode()` offers (`NodeHardfork`), each of which every
- * section that builds a node per fork runs on. `test/prague-osaka.spec.ts` holds
+ * section that builds a node per fork runs on. `test/hardforks.spec.ts` holds
  * the option to exactly this list, so it cannot drift from the node's.
  */
 const NODE_HARDFORKS = [

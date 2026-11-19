@@ -1401,10 +1401,19 @@ export async function createNodeWithInternals(
 	 * is the one such bytes have always produced.
 	 */
 	function refuseIfOverTransactionGasCap(raw: Uint8Array): void {
-		const cap = transactionGasLimitCap(common);
-		if (cap === undefined) return;
 		const gasLimit = wireGasLimit(raw);
-		if (gasLimit === undefined || gasLimit <= cap) return;
+		if (gasLimit !== undefined) refuseGasLimitOverTheCap(gasLimit);
+	}
+
+	/**
+	 * The EIP-7825 refusal itself, for a gas limit the node already holds as a
+	 * number: a raw transaction's (above) and the `gas` a caller hands
+	 * `eth_fillTransaction`, which would otherwise reach `createTx` and come back
+	 * as that library's own exception rather than an RPC error.
+	 */
+	function refuseGasLimitOverTheCap(gasLimit: bigint): void {
+		const cap = transactionGasLimitCap(common);
+		if (cap === undefined || gasLimit <= cap) return;
 		throw new RpcError(
 			-32000,
 			`transaction gas limit too high (cap: ${cap}, tx: ${gasLimit}). ` +
@@ -2971,6 +2980,9 @@ export async function createNodeWithInternals(
 				// and drops the field), so charging for a list its own answer does not
 				// contain would hand back a gas limit for a different transaction. See
 				// `accessListGas` in ./intrinsic-gas.ts.
+				// A caller-supplied `gas` above EIP-7825's cap (Osaka on) is refused here,
+				// in the same words as at submit, rather than by `createTx` below.
+				if (p.gas != null) refuseGasLimitOverTheCap(BigInt(p.gas));
 				const gas: bigint =
 					p.gas != null
 						? BigInt(p.gas)

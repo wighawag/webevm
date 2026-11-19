@@ -238,8 +238,21 @@ async function runCap(hardfork: NodeHardfork, makeEngine?: EngineFactory) {
 			{from: SPONSOR.address, to: BURNER},
 		]),
 	);
+	// ...and a caller-supplied `gas` above the cap is refused by
+	// `eth_fillTransaction` in the node's words, not by the tx library's.
+	const filled = await attempt(node, 'eth_fillTransaction', [
+		{from: SPONSOR.address, to: SINK, gas: toHex(CAP + 1n)},
+	]);
+	const fillOverCap = filled.startsWith('threw') ? clause(filled) : 'filled';
 	await node.dispose();
-	return {overCap, atCap, callOverCap, defaultBudget, estimateCeiling};
+	return {
+		overCap,
+		atCap,
+		callOverCap,
+		defaultBudget,
+		estimateCeiling,
+		fillOverCap,
+	};
 }
 
 async function runSetCode(hardfork: NodeHardfork, makeEngine?: EngineFactory) {

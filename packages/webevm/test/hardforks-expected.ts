@@ -61,6 +61,7 @@ export function assertHardforks(c: Record<string, any>, label: string) {
 			estimateCeiling: expect.stringContaining(
 				'threw -32000: gas required exceeds allowance (30000000)',
 			),
+			fillOverCap: 'filled',
 		});
 	}
 	expect(f.osaka.cap, `${label}: osaka cap`).toEqual({
@@ -76,6 +77,7 @@ export function assertHardforks(c: Record<string, any>, label: string) {
 		estimateCeiling: expect.stringContaining(
 			`threw -32000: gas required exceeds allowance (${CAP})`,
 		),
+		fillOverCap: `threw -32000: transaction gas limit too high (cap: ${CAP}, tx: ${CAP + 1n})`,
 	});
 
 	// ---- EIP-7702, set-code transactions: Prague on ----
