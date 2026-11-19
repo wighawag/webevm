@@ -13,7 +13,9 @@ concurrency:
 jobs:
   check:
     name: format + build
-    runs-on: ubuntu-latest
+    # PINNED, not `ubuntu-latest`: see the `test` job, which is why. Both jobs
+    # share one image so the build and the tests cannot see different systems.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # NO `version` INPUT, deliberately: the action reads `packageManager` from
@@ -42,7 +44,12 @@ jobs:
     # only Chromium hides it. (CI numbers themselves are too noisy to assert on --
     # only gas and result equality are asserted here.)
     name: test (${{ matrix.browser }})
-    runs-on: ubuntu-latest
+    # PINNED to an image Playwright supports. `ubuntu-latest` moved to 26.04, on
+    # which Playwright 1.60 refuses to install its browsers ("Playwright does not
+    # support chromium on ubuntu26.04-x64"), so every test job failed at
+    # `playwright install` before running a test. Move this forward together with
+    # a Playwright that supports the newer image.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
