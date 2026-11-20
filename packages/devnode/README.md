@@ -4,7 +4,7 @@ Dev accounts for [webevm](https://github.com/wighawag/webevm), the slim, executi
 
 webevm's core holds no keys: it answers `eth_accounts`, `eth_sendTransaction` and every other account method with a real `-32601`, on purpose. That is right for an application with its own signing client, and not what a deploy tool or a test runner expects from a local chain. This package is the layer those tools need, on top of the core rather than inside it: a node that answers `eth_accounts` with the same test accounts anvil and Hardhat use, funded at genesis as theirs are, and forwards everything else to webevm unchanged.
 
-This release covers the dev accounts and their funding. Sending from them (`eth_sendTransaction`), signing, impersonation and an alloc export for forge are coming in later releases.
+This release covers the dev accounts, their funding, and an alloc export for forge. Sending from them (`eth_sendTransaction`), signing and impersonation are coming in later releases.
 
 ## Install
 
@@ -77,6 +77,27 @@ A `SlimNode`, the same interface webevm's own nodes have, so it drops in whereve
 - Every other member (`mine`, `dumpState`, `loadState`, `onNewHead`, `getStateRoot`, `computeStateRoot`, `senderMode`, `engine`) is the node's own.
 
 It works with either engine, the default `@ethereumjs/evm` and `webevm/revm`, in any browser webevm runs in (the suite runs on Chromium and WebKit).
+
+## Handing a chain to forge
+
+`toAllocs(dump)` turns a dump into the genesis alloc map forge's `vm.loadAllocs` accepts, so a `forge test` loads a deployment instead of replaying it:
+
+```ts
+import {writeFileSync} from 'node:fs';
+import {toAllocs} from '@webevm/devnode';
+
+writeFileSync('allocs.json', JSON.stringify(toAllocs(await node.dumpState())));
+```
+
+```solidity
+function setUp() public {
+    vm.loadAllocs("allocs.json");
+}
+```
+
+The result is `{address: {nonce, balance, code, storage}}`: nonces and balances as hex quantities, code as hex (`0x` for none), storage keyed by 32-byte slots with 32-byte values. Every account the dump holds is in it, the funded dev accounts included (they are genesis state); the storage root and code hash are left out, since forge recomputes both. It is a pure function of the dump, so it works in Node (a CLI) as in a browser, on any dump: a live node's, a persisted one, either engine's, and a chain whose transactions used fabricated signatures (`senderMode: 'trusted'`), since the alloc carries state only. A malformed dump throws, naming the address and field.
+
+`scripts/forge-load-allocs.mjs` is a MANUAL check that forge really loads it (not run in CI, which has no forge): with forge on the PATH, `pnpm build && node scripts/forge-load-allocs.mjs` deploys a contract whose constructor stores a value, exports the chain, and runs a real `forge test` on it that checks the contract's code, nonce and slot and the dev accounts' balances (`--keep` keeps the generated Foundry project). Its recorded run, under forge 1.7.1: [`docs/spikes/devnode-alloc-export-for-forge/forge-run.md`](https://github.com/wighawag/webevm/blob/main/docs/spikes/devnode-alloc-export-for-forge/forge-run.md).
 
 Why this is a separate package and not part of webevm: [ADR 0017](https://github.com/wighawag/webevm/blob/main/docs/adr/0017-dev-accounts-live-in-webevm-devnode-a-slimnode-decorator-funded-at-genesis.md).
 

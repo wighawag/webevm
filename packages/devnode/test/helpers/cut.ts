@@ -7,6 +7,8 @@
  *   - 'dev-node': the first slice of `@webevm/devnode` (./dev-node-checks.ts):
  *                 dev accounts, funded at genesis, everything else forwarded,
  *                 and a served port
+ *   - 'alloc':    `toAllocs`, the alloc export for forge (./alloc-checks.ts),
+ *                 the same battery alloc.spec.ts also runs in Node
  */
 import type {
 	CodeUnderTest,
@@ -14,6 +16,7 @@ import type {
 } from 'playwright-browser-harness/contract';
 import {captureEnv} from 'playwright-browser-harness/contract';
 import {runDevNodeChecks} from './dev-node-checks.js';
+import {runAllocChecks} from './alloc-checks.js';
 
 const cut: CodeUnderTest = {
 	name: '@webevm/devnode',
@@ -24,6 +27,14 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'dev-node') {
 			try {
 				results.devNode = await runDevNodeChecks(undefined);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings: [], errors, env: captureEnv()};
+		}
+		if (ctx.params.mode === 'alloc') {
+			try {
+				results.alloc = await runAllocChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
