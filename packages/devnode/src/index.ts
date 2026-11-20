@@ -4,6 +4,8 @@
  */
 export {createDevNode, wrapDevNode} from './dev-node.js';
 export type {DevNodeOptions, WrapDevNodeOptions} from './dev-node.js';
+export {toAllocs} from './allocs.js';
+export type {AllocAccount, Allocs} from './allocs.js';
 export {
 	devAccountBalances,
 	DEFAULT_ACCOUNT_COUNT,
