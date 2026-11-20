@@ -31,6 +31,10 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"default": "./dist/index.js"
+		},
+		"./worker-host": {
+			"types": "./dist/worker-host.d.ts",
+			"default": "./dist/worker-host.js"
 		}
 	},
 	"files": [
@@ -48,7 +52,13 @@
 		"@scure/bip39": "^2.0.0"
 	},
 	"peerDependencies": {
-		"webevm": ">=0.9.1"
+		"comlink": "^4.4.2",
+		"webevm": ">=0.10.0"
+	},
+	"peerDependenciesMeta": {
+		"comlink": {
+			"optional": true
+		}
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.60.0",
