@@ -1,5 +1,0 @@
----
-'@webevm/devnode': minor
----
-
-**Dev accounts sign: `eth_signTransaction`, `personal_sign`, `eth_sign` and `eth_signTypedData_v4`.** `eth_signTransaction` fills and signs exactly as `eth_sendTransaction` does (same types, same refusals) and returns the raw signed transaction as hex without sending it. `personal_sign [message, address]` and `eth_sign [address, message]` (MetaMask's and geth's orders) sign the EIP-191 personal message; `personal_sign` reads a non-hex message as UTF-8 text, as MetaMask does, and `eth_sign` never signs a raw hash. `eth_signTypedData_v4 [address, typedData]` (an object or its JSON text) signs the EIP-712 digest, computed by the package's own encoder (nested structs, fixed and dynamic arrays, every atomic type; a missing `EIP712Domain` type is derived from the domain, as viem derives it). Signatures are 65-byte `r ‖ s ‖ v`, deterministic and low-`s`, identical to viem's local accounts' on the same key. An address the node holds no key for is refused with `4100`; a malformed request with `-32602`, naming what is wrong.
