@@ -50,6 +50,10 @@ jobs:
     # `playwright install` before running a test. Move this forward together with
     # a Playwright that supports the newer image.
     runs-on: ubuntu-24.04
+    # A green job takes about 3 to 4 minutes. Without this, a stalled step (the
+    # webkit `install browser` step once hung for over 25 minutes) holds the job
+    # for GitHub's six-hour default; 20 turns that into a fast red a re-run clears.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
