@@ -107,7 +107,15 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-FIVE TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-SIX TIMES SINCE. Most recent first:
+ *
+ * 449.7 -> 450.5 KB raw / 135.7 -> 136.0 KB gzip, by
+ * `hardhat-and-anvil-names-for-the-state-cheats`: the four state cheats answer
+ * under Hardhat's and anvil's names too (`hardhat_setBalance`,
+ * `anvil_setStorageAt`, ...; ADR 0016's principle). The 0.8 KB is the eight new
+ * `case` labels in `request`, the `cheatHex` validator and the aliases' refusal
+ * messages (which name the method and what it expected) in `src/node.ts`. No
+ * import was added. In the CORE graph because the `evm_*` cheats they alias are.
  *
  * 448.1 -> 449.7 KB raw / 135.2 -> 135.7 KB gzip, by `block-clock-cheats`: the
  * node's clock and the time cheats that move it, under anvil's names and wire
@@ -469,7 +477,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 449.7, gzipKB: 135.7};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 450.5, gzipKB: 136.0};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

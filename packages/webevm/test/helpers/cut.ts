@@ -108,6 +108,11 @@
  *                            block is stamped with and what its transactions'
  *                            `TIMESTAMP` reads. ENGINE-PARAMETERISED (revm
  *                            through ./cut-revm.ts)
+ *   - 'state-cheat-aliases': the state cheats under Hardhat's and anvil's names
+ *                            (`hardhat_setBalance`, `anvil_setStorageAt`, ...)
+ *                            have the `evm_*` cheat's effect, and viem's test
+ *                            client drives them. ENGINE-PARAMETERISED (revm
+ *                            through ./cut-revm.ts)
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -151,6 +156,7 @@ import {
 import {runLogBlockTimestampChecks} from './log-block-timestamp.js';
 import {runHardforkChecks, runHardforkConstructionChecks} from './hardforks.js';
 import {runBlockClockChecks} from './block-clock.js';
+import {runStateCheatAliasChecks} from './state-cheat-aliases.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -566,6 +572,16 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'block-clock') {
 			try {
 				results.blockClock = await runBlockClockChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// state-cheat-aliases: the state cheats under Hardhat's and anvil's names.
+		if (ctx.params.mode === 'state-cheat-aliases') {
+			try {
+				results.stateCheatAliases = await runStateCheatAliasChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

@@ -1070,9 +1070,15 @@ export async function createNodeWithInternals(
 	/**
 	 * A time cheat's integer: a JSON number or a quantity string (hex `0x…` or
 	 * decimal), the shapes anvil accepts; at most a uint64, a header timestamp's
-	 * width. Anything else is `-32602`, naming the method, rather than a guess.
+	 * width, unless the caller names another (`bits`: 256 for a balance or a slot).
+	 * Anything else is `-32602`, naming the method, rather than a guess.
 	 */
-	function quantity(value: unknown, method: string, what = 'seconds'): bigint {
+	function quantity(
+		value: unknown,
+		method: string,
+		what = 'seconds',
+		bits = 64n,
+	): bigint {
 		let s: bigint | undefined;
 		if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
 			s = BigInt(value);
@@ -1081,12 +1087,35 @@ export async function createNodeWithInternals(
 			(/^0x[0-9a-fA-F]+$/.test(value) || /^[0-9]+$/.test(value))
 		)
 			s = BigInt(value);
-		if (s === undefined || s >= 2n ** 64n)
+		if (s === undefined || s >= 2n ** bits)
 			throw new RpcError(
 				-32602,
-				`${method}: expected a non-negative integer number of ${what} below 2^64, got ${JSON.stringify(value)}`,
+				`${method}: expected a non-negative integer number of ${what} below 2^${bits}, got ${JSON.stringify(value)}`,
 			);
 		return s;
+	}
+
+	/**
+	 * A `hardhat_*` / `anvil_*` state cheat's hex parameter: `0x` and whole bytes,
+	 * exactly `bytes` of them when given (20 for an address, 32 for a storage
+	 * value). Anything else is `-32602`, naming the method and what it expected.
+	 */
+	function cheatHex(
+		value: unknown,
+		method: string,
+		what: string,
+		bytes?: number,
+	): string {
+		const ok =
+			typeof value === 'string' &&
+			/^0x([0-9a-fA-F]{2})*$/.test(value) &&
+			(bytes === undefined || value.length === 2 + 2 * bytes);
+		if (!ok)
+			throw new RpcError(
+				-32602,
+				`${method}: expected ${what} as 0x-prefixed hex of ${bytes === undefined ? 'whole' : `exactly ${bytes}`} bytes, got ${JSON.stringify(value)}`,
+			);
+		return value;
 	}
 
 	/**
@@ -3222,37 +3251,108 @@ export async function createNodeWithInternals(
 			// are `evm_*`-namespaced. They write the flat state only; on a `computeStateRoot` node the
 			// open record names what they wrote, so the next getStateRoot() (or mined
 			// block) rehashes it into the derived trie.
-			case 'evm_setBalance': {
+			//
+			// UNDER HARDHAT'S AND ANVIL'S NAMES TOO (`hardhat_setBalance`,
+			// `anvil_setBalance`, and so on for nonce, code and storage), per ADR 0016's
+			// principle: a cheat answers under the names the other dev nodes give it,
+			// so viem's test actions in `hardhat` and `anvil` mode, and tooling such as
+			// rocketh's `fundImpersonatedAccounts`, reach it unchanged. An alias has
+			// EXACTLY the `evm_*` cheat's effect (the same write, below); what differs
+			// is what it answers and what it refuses, which follow the two nodes:
+			//
+			//   - RESULTS ARE ANVIL'S, under both names, as ADR 0016 set for
+			//     `hardhat_mine`: `null` for balance, nonce and code, `true` for
+			//     storage. anvil serves the `hardhat_*` names as serde aliases of its own
+			//     requests (foundry crates/anvil/core/src/eth/mod.rs, `SetBalance`,
+			//     `SetNonce`, `SetCode`, `SetStorageAt`) whose handlers return `()`,
+			//     `()`, `()` and `true` (crates/anvil/src/eth/api.rs,
+			//     `anvil_set_balance` .. `anvil_set_storage_at`), read at foundry
+			//     875cf548. Hardhat answers `true` for all four (EDR ee0dece6,
+			//     crates/edr_provider/src/requests/hardhat/state.rs), so a caller that
+			//     tests a `hardhat_*` result for `=== true` sees `null` here, as it does
+			//     on anvil. viem's test actions discard the result. The `evm_*` names
+			//     keep answering `true`.
+			//   - VALIDATION IS WHERE BOTH NODES AGREE: an address of 20 bytes; a
+			//     balance and a slot below 2^256, a nonce below 2^64 (anvil's U256
+			//     narrowed to u64, Hardhat's u64), each a JSON number or a hex or
+			//     decimal string as anvil's `deserialize_number` takes it; code as whole
+			//     hex bytes; and a storage VALUE of EXACTLY 32 bytes (anvil's `B256`,
+			//     Hardhat's reference: "the value to write must be exactly 32 bytes
+			//     long"), where `evm_setStorageAt` left-pads a shorter one. Anything
+			//     else is `-32602` naming the method, before anything is written.
+			//   - THE ONE DIFFERENCE FROM HARDHAT: a nonce LOWER than the account's is
+			//     accepted, as anvil (and `evm_setNonce`) accepts it. Hardhat refuses it
+			//     (`New nonce (..) must not be smaller than the existing nonce (..)`)
+			//     and also refuses any nonce while its pool holds a transaction (EDR
+			//     crates/edr_provider/src/data.rs, `set_nonce`); neither is done here.
+			case 'evm_setBalance':
+			case 'hardhat_setBalance':
+			case 'anvil_setBalance': {
 				// params: [address, valueHex]
-				const addr = createAddressFromString(params[0]);
-				await mutateAccount(addr, (acc) => {
-					acc.balance = BigInt(params[1]);
-				});
-				return true;
-			}
-			case 'evm_setNonce': {
-				// params: [address, nonceHex]
-				const addr = createAddressFromString(params[0]);
-				await mutateAccount(addr, (acc) => {
-					acc.nonce = BigInt(params[1]);
-				});
-				return true;
-			}
-			case 'evm_setCode': {
-				// params: [address, codeHex]
-				const addr = createAddressFromString(params[0]);
-				await sm.putCode(addr, hexToBytes(params[1]));
-				return true;
-			}
-			case 'evm_setStorageAt': {
-				// params: [address, slotHex, valueHex(32-byte)]
-				const addr = createAddressFromString(params[0]);
-				const slot = setLengthLeft(bigIntToBytes(BigInt(params[1])), 32);
-				await sm.putStorage(
-					addr,
-					slot,
-					setLengthLeft(hexToBytes(params[2]), 32),
+				const m = args.method;
+				const alias = m !== 'evm_setBalance';
+				const addr = createAddressFromString(
+					alias ? cheatHex(params[0], m, 'an address', 20) : params[0],
 				);
+				const balance = alias
+					? quantity(params[1], m, 'wei', 256n)
+					: BigInt(params[1]);
+				await mutateAccount(addr, (acc) => {
+					acc.balance = balance;
+				});
+				return alias ? null : true;
+			}
+			case 'evm_setNonce':
+			case 'hardhat_setNonce':
+			case 'anvil_setNonce': {
+				// params: [address, nonceHex]
+				const m = args.method;
+				const alias = m !== 'evm_setNonce';
+				const addr = createAddressFromString(
+					alias ? cheatHex(params[0], m, 'an address', 20) : params[0],
+				);
+				const nonce = alias
+					? quantity(params[1], m, 'transactions')
+					: BigInt(params[1]);
+				await mutateAccount(addr, (acc) => {
+					acc.nonce = nonce;
+				});
+				return alias ? null : true;
+			}
+			case 'evm_setCode':
+			case 'hardhat_setCode':
+			case 'anvil_setCode': {
+				// params: [address, codeHex]
+				const m = args.method;
+				const alias = m !== 'evm_setCode';
+				const addr = createAddressFromString(
+					alias ? cheatHex(params[0], m, 'an address', 20) : params[0],
+				);
+				const code = hexToBytes(
+					alias ? cheatHex(params[1], m, 'code') : params[1],
+				);
+				await sm.putCode(addr, code);
+				return alias ? null : true;
+			}
+			case 'evm_setStorageAt':
+			case 'hardhat_setStorageAt':
+			case 'anvil_setStorageAt': {
+				// params: [address, slotHex, valueHex(32-byte)]
+				const m = args.method;
+				const alias = m !== 'evm_setStorageAt';
+				const addr = createAddressFromString(
+					alias ? cheatHex(params[0], m, 'an address', 20) : params[0],
+				);
+				const slot = setLengthLeft(
+					bigIntToBytes(
+						alias ? quantity(params[1], m, 'slot', 256n) : BigInt(params[1]),
+					),
+					32,
+				);
+				const value = alias
+					? hexToBytes(cheatHex(params[2], m, 'a storage value', 32))
+					: setLengthLeft(hexToBytes(params[2]), 32);
+				await sm.putStorage(addr, slot, value);
 				return true;
 			}
 			case 'evm_setAccount': {
