@@ -1,0 +1,3 @@
+# `loadState` into a node that already holds state keeps accounts the dump does not name (2026-11-20)
+
+`loadState` in `packages/webevm/src/node.ts` `putAccount`s / `putCode`s / `putStorage`s every entry of the dump over the live state and removes nothing first, so an account, code entry or non-zero slot that exists in the node but not in the dump survives the load (blocks, receipts and logs ARE replaced). Harmless for the construction-time persistence load into a fresh node, but a public `node.loadState(dump)` on a used node yields a state that is neither. Found while building `evm_revert`, which works around it by emptying the state first (`clearState`); the public method was left as it is.

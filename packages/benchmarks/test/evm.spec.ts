@@ -107,7 +107,15 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-SIX TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-SEVEN TIMES SINCE. Most recent first:
+ *
+ * 450.5 -> 451.7 KB raw / 136.0 -> 136.3 KB gzip, by `snapshots-in-the-core`:
+ * `evm_snapshot` / `evm_revert` and anvil's `anvil_snapshot` / `anvil_revert`
+ * (ADR 0016's principle, applied in ADR 0017). The 1.2 KB is the four `case`
+ * labels in `request`, `takeSnapshot` / `revertToSnapshot` in `src/node.ts`
+ * and the two small state-manager methods a revert needs (`clearState`,
+ * `replaceChangeSet`). No import was added: a snapshot is the node's own
+ * `dumpState`, a revert its own `loadState`.
  *
  * 449.7 -> 450.5 KB raw / 135.7 -> 136.0 KB gzip, by
  * `hardhat-and-anvil-names-for-the-state-cheats`: the four state cheats answer
@@ -477,7 +485,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 450.5, gzipKB: 136.0};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 451.7, gzipKB: 136.3};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
