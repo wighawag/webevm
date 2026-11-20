@@ -319,7 +319,7 @@ export async function runDevNodeChecks(makeEngine: MakeEngine) {
 			params: ['0x00000000000000000000000000000000000000bb', 'latest'],
 		},
 		{method: 'webevm_noSuchMethod', params: []},
-		{method: 'eth_sendTransaction', params: [{}]},
+		{method: 'eth_signTransaction', params: [{}]},
 		{method: 'eth_getBlockByNumber', params: ['0x99', false]},
 		{method: 'eth_getBalance', params: ['not an address', 'latest']},
 	];
@@ -331,6 +331,17 @@ export async function runDevNodeChecks(makeEngine: MakeEngine) {
 			dev: await outcome(dev.request(args)),
 		});
 	}
+	// The one method in the sample the layer ANSWERS rather than forwards: the
+	// core refuses `eth_sendTransaction` with -32601, the layer with its own
+	// refusal of a request with no `from` (the send battery is ./send-checks.ts).
+	const answered = {
+		plain: await outcome(
+			plain.request({method: 'eth_sendTransaction', params: [{}]}),
+		),
+		dev: await outcome(
+			dev.request({method: 'eth_sendTransaction', params: [{}]}),
+		),
+	};
 	// Every other member delegates.
 	const members = {
 		senderMode: [plain.senderMode, dev.senderMode],
@@ -407,5 +418,14 @@ export async function runDevNodeChecks(makeEngine: MakeEngine) {
 	consumer2.close();
 	const served = {servedBefore, afterClose, afterDispose, innerDisposed};
 
-	return {defaults, derivation, funding, forwarded, members, trusted, served};
+	return {
+		defaults,
+		derivation,
+		funding,
+		forwarded,
+		answered,
+		members,
+		trusted,
+		served,
+	};
 }

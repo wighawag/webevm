@@ -39,6 +39,7 @@
 	],
 	"dependencies": {
 		"@eip-1193/over-port": "^0.2.0",
+		"@ethereumjs/common": "^10.1.2",
 		"@ethereumjs/tx": "^10.1.2",
 		"@ethereumjs/util": "^10.1.2",
 		"@noble/curves": "^2.2.0",

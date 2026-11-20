@@ -5,6 +5,7 @@
  *
  * Modes:
  *   - 'dev-node': ./dev-node-checks.ts, every node created on revm
+ *   - 'send':     ./send-checks.ts, every node created on revm
  */
 import type {
 	CodeUnderTest,
@@ -14,6 +15,7 @@ import {captureEnv} from 'playwright-browser-harness/contract';
 import {createRevmEngine} from 'webevm/revm';
 import wasm from 'revm-wasm/revm.wasm';
 import {runDevNodeChecks} from './dev-node-checks.js';
+import {runSendChecks} from './send-checks.js';
 
 const cut: CodeUnderTest = {
 	name: '@webevm/devnode (revm)',
@@ -26,6 +28,17 @@ const cut: CodeUnderTest = {
 				// Compiled once, instantiated per node: one engine serves one node.
 				const module = await WebAssembly.compile(wasm);
 				results.devNode = await runDevNodeChecks(() =>
+					createRevmEngine({wasm: module}),
+				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings: [], errors, env: captureEnv()};
+		}
+		if (ctx.params.mode === 'send') {
+			try {
+				const module = await WebAssembly.compile(wasm);
+				results.send = await runSendChecks(() =>
 					createRevmEngine({wasm: module}),
 				);
 			} catch (e) {

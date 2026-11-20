@@ -4,7 +4,7 @@ Dev accounts for [webevm](https://github.com/wighawag/webevm), the slim, executi
 
 webevm's core holds no keys: it answers `eth_accounts`, `eth_sendTransaction` and every other account method with a real `-32601`, on purpose. That is right for an application with its own signing client, and not what a deploy tool or a test runner expects from a local chain. This package is the layer those tools need, on top of the core rather than inside it: a node that answers `eth_accounts` with the same test accounts anvil and Hardhat use, funded at genesis as theirs are, and forwards everything else to webevm unchanged.
 
-This release covers the dev accounts, their funding, and an alloc export for forge. Sending from them (`eth_sendTransaction`), signing and impersonation are coming in later releases.
+This release covers the dev accounts, their funding, sending from them (`eth_sendTransaction`), and an alloc export for forge. Signing methods and impersonation are coming in later releases.
 
 ## Install
 
@@ -67,11 +67,37 @@ const node = wrapDevNode(
 
 `wrapDevNode(node, {accounts})` FUNDS NOTHING, because genesis is decided when a node is created. To fund a node created elsewhere (a `createWorkerNode()` whose keys stay on the main thread, say), pass `devAccountBalances(options)` as its `initialBalances`: it returns exactly the balances `createDevNode` would fund for the same options.
 
+## Sending from a dev account
+
+```ts
+const hash = await wallet.sendTransaction({account: deployer, to, value: 1n, chain: null});
+// or, raw: node.request({method: 'eth_sendTransaction', params: [{from: deployer, to, value: '0x1'}]})
+```
+
+`eth_sendTransaction` with a dev account's `from` fills what the request leaves out, signs with that account's key, submits it to the node, and returns the hash. Under auto mining it is mined before the call returns, like any submitted transaction.
+
+**What is filled, and only that.** The nonce from the pending nonce (`eth_getTransactionCount` at `pending`, so a send queued behind an unmined one gets the next nonce); `gas` from `eth_estimateGas` on the same request (its access list and authorization list are charged); the fees from the node's fee market as `eth_fillTransaction` fills them: `maxPriorityFeePerGas` is the node's priority fee and `maxFeePerGas` its base fee plus that, or `gasPrice` from `eth_gasPrice` for a legacy transaction. A field you name is sent as named, a stale `nonce` included (which the node then refuses as a replay).
+
+**The type follows the fields, and nothing is dropped.** A `gasPrice` sends type 0, or type 1 with an `accessList`; an `authorizationList` sends type 4 (EIP-7702, which the node refuses before Prague, in its own words); anything else is type 2, carrying any `accessList`. An explicit `type` (0, 1, 2 or 4) is honoured. Unlike `eth_fillTransaction`, which drops an access list, a request that cannot be sent as named is refused with `-32602` rather than trimmed: `gasPrice` alongside EIP-1559 fees or an authorization list, an access list on type 0, blob (type 3) fields, `data` and `input` that differ, or a `chainId` that is not the node's.
+
+**One at a time.** Each send is filled, signed and submitted as one operation on a queue, so concurrent sends from one account get consecutive nonces.
+
+**From an account the node holds no key for**, the request is refused with `4100` (EIP-1193's "Unauthorized"), naming the remedies: configure its key in `accounts`, or impersonate it (not yet available). Nothing is sent and nothing moves.
+
+### The two send paths, by `senderMode`
+
+| node | how a dev account's transaction is submitted |
+|---|---|
+| `senderMode: 'recover'` (the default) | `eth_sendRawTransaction(raw)`: the node recovers the sender from the signature, as for any client |
+| `senderMode: 'trusted'` | `evm_sendRawTransactionAs(raw, from)`: the node is told the sender and skips the recovery, which is cheaper |
+
+Either way the transaction carries the account's REAL signature. So a chain built on a `'trusted'` dev node is still ordinary chain history: its transactions (`dumpState().transactions[hash].raw`) replay on a `'recover'` node, or any other node of the same chain ID, under the same hash and sender. [ADR 0002](https://github.com/wighawag/webevm/blob/main/docs/adr/0002-trusted-sender-is-a-primitive-impersonation-is-not-our-job.md)'s portability caveat is about fabricated signatures only, which the dev accounts never use. Signing is deterministic (RFC 6979), so the same request on the same state is the same transaction in either mode.
+
 ## What the wrapped node is
 
 A `SlimNode`, the same interface webevm's own nodes have, so it drops in wherever one goes:
 
-- `request` answers `eth_accounts` with the dev accounts, in order, as lowercase hex (as webevm writes every address). It never lists an impersonated address. Every other method reaches the node unchanged, its result or its error included: the core's own `-32601` for a method nobody implements arrives exactly as the core raised it.
+- `request` answers `eth_accounts` with the dev accounts, in order, as lowercase hex (as webevm writes every address). It never lists an impersonated address. It answers `eth_sendTransaction` from a dev account (above). Every other method reaches the node unchanged, its result or its error included: the core's own `-32601` for a method nobody implements arrives exactly as the core raised it.
 - `serveOn(port)` serves the dev node's `request`, so a consumer on another thread using `providerOverPort(port)` from `@eip-1193/over-port` sees the dev accounts too.
 - `dispose()` stops answering on the ports it served, then disposes the node.
 - Every other member (`mine`, `dumpState`, `loadState`, `onNewHead`, `getStateRoot`, `computeStateRoot`, `senderMode`, `engine`) is the node's own.

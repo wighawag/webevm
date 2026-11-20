@@ -90,6 +90,9 @@ importers:
       '@eip-1193/over-port':
         specifier: ^0.2.0
         version: 0.2.0
+      '@ethereumjs/common':
+        specifier: ^10.1.2
+        version: 10.1.2
       '@ethereumjs/tx':
         specifier: ^10.1.2
         version: 10.1.2
