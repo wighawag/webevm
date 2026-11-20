@@ -4,6 +4,7 @@ slug: devnode-eth-send-transaction-from-dev-accounts
 spec: dev-node-package
 blockedBy: [devnode-package-dev-accounts-funded-at-genesis]
 covers: [3, 4, 10, 17]
+needsAnswers: true
 ---
 
 ## What to build
