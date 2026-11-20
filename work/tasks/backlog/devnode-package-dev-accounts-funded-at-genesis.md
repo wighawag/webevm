@@ -2,24 +2,15 @@
 title: @webevm/devnode: the package, its dev accounts, funded at genesis
 slug: devnode-package-dev-accounts-funded-at-genesis
 spec: dev-node-package
-needsAnswers: true
 blockedBy: []
 covers: [1, 2, 20, 23, 24, 25, 26]
 ---
-
-<!-- open-questions -->
-
-## Open questions
-
-1. **The package's license.** The repository and `webevm` are MIT; the maintainer's default for NEW projects is AGPL-3.0. A package inside this MIT monorepo is proposed to be MIT, to match. Confirm before publishing configuration is written.
-
-<!-- /open-questions -->
 
 ## What to build
 
 The new workspace package `@webevm/devnode` in `packages/devnode`, with the first vertical slice of it: `createDevNode(options)` and `wrapDevNode(node, options)`, dev accounts answering `eth_accounts`, funded at genesis, and every other method forwarded to the node untouched.
 
-- **The package**: published config like `packages/webevm` (ESM, `dist`, types), `webevm` as a PEER dependency with a minimum version (the worker task raises it to the release with the worker-host factory), the direct dependencies listed in ADR 0017 (`@scure/bip39`, `@scure/bip32`, `@noble/curves`, `@noble/hashes`, `@ethereumjs/tx`, `@ethereumjs/util`, `@eip-1193/over-port`; `comlink` comes with the worker task), prettier and test setup in the repo's style (Playwright, Chromium and WebKit, through `playwright-browser-harness`), included in the root `format:check` / `build` / `test` and in `scripts/check-type-deps.mjs`'s scan.
+- **The package**: licensed MIT, like the repository and `webevm` (`"license": "MIT"` in its `package.json`; the maintainer's answer to this task's license question, 2026-11-20), published config like `packages/webevm` (ESM, `dist`, types), `webevm` as a PEER dependency with a minimum version (the worker task raises it to the release with the worker-host factory), the direct dependencies listed in ADR 0017 (`@scure/bip39`, `@scure/bip32`, `@noble/curves`, `@noble/hashes`, `@ethereumjs/tx`, `@ethereumjs/util`, `@eip-1193/over-port`; `comlink` comes with the worker task), prettier and test setup in the repo's style (Playwright, Chromium and WebKit, through `playwright-browser-harness`), included in the root `format:check` / `build` / `test` and in `scripts/check-type-deps.mjs`'s scan.
 - **Accounts**: built in, the well-known anvil / Hardhat test accounts (the standard test mnemonic, path `m/44'/60'/0'/0/i`), 10 by default as on anvil; configurable as a mnemonic (`mnemonic`, `count`, `path`, `initialIndex`) or a list of private keys. `eth_accounts` lists exactly these, in order, and never an impersonated address.
 - **Funding at genesis**: `createDevNode({...nodeOptions, accounts, balance, fund, fundAccounts})` derives the accounts, merges `balance` (default 10,000 ETH) for each into `initialBalances` plus `fundAccounts` (a map of extra addresses to balances in wei, anvil's `--fund-accounts`), and creates the node with webevm's `createNode`; a caller's own `initialBalances` entry for the same address wins. A state restored by `loadState` or persistence keeps its own balances (webevm applies `initialBalances` to a new genesis only). `wrapDevNode` on an existing node funds nothing.
 - **The decorator**: a `Required<SlimNode>` that overrides `request` (the methods above, everything else forwarded with its result or error unchanged), `serveOn` (serving its own `request`) and `dispose` (closing the ports it served, then delegating), and delegates every other member.
@@ -31,6 +22,7 @@ The new workspace package `@webevm/devnode` in `packages/devnode`, with the firs
 - [ ] `balance`, `fundAccounts` and `fund: false` work, and `devAccountBalances(options)` returns the `initialBalances` the same options would fund (for a node created elsewhere); a dump of a funded chain loaded into a new `createDevNode` keeps the dump's balances.
 - [ ] Every method the layer does not implement reaches the node unchanged, including the node's own `-32601` (asserted for a sample: an `eth_call`, a cheat, an unknown method).
 - [ ] A port served by the layer answers `eth_accounts`, and stops answering after `dispose()`.
+- [ ] `packages/devnode/package.json` declares `"license": "MIT"`.
 - [ ] It runs in Chromium and WebKit on both engines (default and `webevm/revm`).
 - [ ] The package README describes it, and the root README (which is also `webevm`'s npm README) gains a short pointer to the package; a changeset for the new package.
 
