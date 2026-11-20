@@ -4,7 +4,7 @@ Dev accounts for [webevm](https://github.com/wighawag/webevm), the slim, executi
 
 webevm's core holds no keys: it answers `eth_accounts`, `eth_sendTransaction` and every other account method with a real `-32601`, on purpose. That is right for an application with its own signing client, and not what a deploy tool or a test runner expects from a local chain. This package is the layer those tools need, on top of the core rather than inside it: a node that answers `eth_accounts` with the same test accounts anvil and Hardhat use, funded at genesis as theirs are, and forwards everything else to webevm unchanged.
 
-This release covers the dev accounts, their funding, sending from them (`eth_sendTransaction`), and an alloc export for forge. Signing methods and impersonation are coming in later releases.
+This release covers the dev accounts, their funding, sending and signing with them (`eth_sendTransaction`, `eth_signTransaction`, `personal_sign`, `eth_sign`, `eth_signTypedData_v4`), and an alloc export for forge. Impersonation is coming in a later release.
 
 ## Install
 
@@ -93,11 +93,30 @@ const hash = await wallet.sendTransaction({account: deployer, to, value: 1n, cha
 
 Either way the transaction carries the account's REAL signature. So a chain built on a `'trusted'` dev node is still ordinary chain history: its transactions (`dumpState().transactions[hash].raw`) replay on a `'recover'` node, or any other node of the same chain ID, under the same hash and sender. [ADR 0002](https://github.com/wighawag/webevm/blob/main/docs/adr/0002-trusted-sender-is-a-primitive-impersonation-is-not-our-job.md)'s portability caveat is about fabricated signatures only, which the dev accounts never use. Signing is deterministic (RFC 6979), so the same request on the same state is the same transaction in either mode.
 
+## Signing with a dev account
+
+```ts
+const signature = await wallet.signMessage({account: deployer, message: 'Sign in to example.org'});
+const permit = await wallet.signTypedData({account: deployer, domain, types, primaryType: 'Permit', message});
+const raw = await wallet.signTransaction({account: deployer, to, value: 1n, chain: null});
+```
+
+| method | parameters | signs |
+|---|---|---|
+| `personal_sign` | `[message, address]` (MetaMask's and geth's order) | the EIP-191 personal message: `0x` hex as the bytes it spells, any other string as UTF-8 text, as MetaMask reads it |
+| `eth_sign` | `[address, message]` (geth's order) | the same EIP-191 personal message, `message` as `0x` hex; never a raw hash |
+| `eth_signTypedData_v4` | `[address, typedData]`, an object or its JSON text | the EIP-712 digest of `typedData` |
+| `eth_signTransaction` | `[request]` | the transaction `eth_sendTransaction` would send for the same request, filled the same way; it returns the raw signed transaction as hex and submits nothing (pass it to `eth_sendRawTransaction`) |
+
+A signature is the 65 bytes `r ‖ s ‖ v` with `v` 27 or 28, as viem, MetaMask and geth return it, deterministic (RFC 6979) and low-`s`: the same message signs to the same bytes as viem's `privateKeyToAccount(key).signMessage` / `signTypedData`. The EIP-712 encoder is this package's own (no dependency): referenced types sorted by name in the type encoding, nested structs, fixed and dynamic arrays (nested too), `bytes` and `string` hashed, every `intN` / `uintN` / `bytesN`, `bool` and `address`. A missing `EIP712Domain` type is derived from the domain's fields, as viem and ethers derive it; a value that does not fit its type (a missing member, an integer out of range, a `bytesN` of the wrong length) is refused with `-32602` naming its path, never coerced.
+
+An address the node holds no key for is refused with `4100`, naming the `accounts` option. Nothing is ever signed for an address without its key.
+
 ## What the wrapped node is
 
 A `SlimNode`, the same interface webevm's own nodes have, so it drops in wherever one goes:
 
-- `request` answers `eth_accounts` with the dev accounts, in order, as lowercase hex (as webevm writes every address). It never lists an impersonated address. It answers `eth_sendTransaction` from a dev account (above). Every other method reaches the node unchanged, its result or its error included: the core's own `-32601` for a method nobody implements arrives exactly as the core raised it.
+- `request` answers `eth_accounts` with the dev accounts, in order, as lowercase hex (as webevm writes every address). It never lists an impersonated address. It answers `eth_sendTransaction` and the signing methods for a dev account (above). Every other method reaches the node unchanged, its result or its error included: the core's own `-32601` for a method nobody implements arrives exactly as the core raised it.
 - `serveOn(port)` serves the dev node's `request`, so a consumer on another thread using `providerOverPort(port)` from `@eip-1193/over-port` sees the dev accounts too.
 - `dispose()` stops answering on the ports it served, then disposes the node.
 - Every other member (`mine`, `dumpState`, `loadState`, `onNewHead`, `getStateRoot`, `computeStateRoot`, `senderMode`, `engine`) is the node's own.

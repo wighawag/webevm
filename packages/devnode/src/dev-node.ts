@@ -26,7 +26,8 @@ import {
 	type DevAccountsOptions,
 	type DevFundingOptions,
 } from './accounts.js';
-import {createSender} from './send.js';
+import {createTransactionMethods} from './send.js';
+import {createMessageSigner} from './sign.js';
 
 /** What {@link wrapDevNode} takes: the accounts, and nothing that funds. */
 export type WrapDevNodeOptions = DevAccountsOptions;
@@ -45,7 +46,9 @@ export type DevNodeOptions = NodeOptions & DevFundingOptions;
  *
  * - `request` answers `eth_accounts` with the dev accounts, in order, and
  *   `eth_sendTransaction` from one of them (filled, signed with its key and
- *   submitted by the node's sender mode; see ./send.ts), and
+ *   submitted by the node's sender mode; see ./send.ts), signs for them
+ *   (`eth_signTransaction`, ./send.ts; `personal_sign`, `eth_sign` and
+ *   `eth_signTypedData_v4`, ./sign.ts), and
  *   forwards every other method to the node, its result or its error unchanged
  *   (the node's own `-32601` included: the very promise the node returned);
  * - `serveOn` serves THIS `request` on the port, so a served port answers the
@@ -70,7 +73,8 @@ function decorate(
 ): Required<SlimNode> {
 	const addresses = accounts.map((a) => a.address);
 	const servedPorts = new Set<ServedProvider>();
-	const sendTransaction = createSender(node, accounts);
+	const transactions = createTransactionMethods(node, accounts);
+	const signer = createMessageSigner(accounts);
 
 	async function request(args: RequestArguments): Promise<unknown> {
 		switch (args.method) {
@@ -79,7 +83,15 @@ function decorate(
 				// change the next one.
 				return [...addresses];
 			case 'eth_sendTransaction':
-				return sendTransaction(args.params);
+				return transactions.sendTransaction(args.params);
+			case 'eth_signTransaction':
+				return transactions.signTransaction(args.params);
+			case 'personal_sign':
+				return signer.personalSign(args.params);
+			case 'eth_sign':
+				return signer.ethSign(args.params);
+			case 'eth_signTypedData_v4':
+				return signer.signTypedDataV4(args.params);
 			default:
 				return node.request(args);
 		}

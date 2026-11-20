@@ -9,6 +9,9 @@
  *                 and a served port
  *   - 'send':     `eth_sendTransaction` from dev accounts (./send-checks.ts),
  *                 in both sender modes
+ *   - 'sign':     the signing methods and the EIP-712 encoder
+ *                 (./sign-checks.ts), the same battery sign.spec.ts also
+ *                 runs in Node
  *   - 'alloc':    `toAllocs`, the alloc export for forge (./alloc-checks.ts),
  *                 the same battery alloc.spec.ts also runs in Node
  */
@@ -20,6 +23,7 @@ import {captureEnv} from 'playwright-browser-harness/contract';
 import {runDevNodeChecks} from './dev-node-checks.js';
 import {runSendChecks} from './send-checks.js';
 import {runAllocChecks} from './alloc-checks.js';
+import {runSignChecks} from './sign-checks.js';
 
 const cut: CodeUnderTest = {
 	name: '@webevm/devnode',
@@ -38,6 +42,14 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'send') {
 			try {
 				results.send = await runSendChecks(undefined);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings: [], errors, env: captureEnv()};
+		}
+		if (ctx.params.mode === 'sign') {
+			try {
+				results.sign = await runSignChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}
