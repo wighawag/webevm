@@ -74,6 +74,12 @@ jobs:
       - name: library tests
         run: pnpm --filter webevm exec playwright test --project=${{ matrix.browser }}
 
+      # @webevm/devnode: dev accounts funded at genesis and everything else
+      # forwarded, on both engines. Same Playwright as webevm, so the browser
+      # installed above serves it.
+      - name: devnode tests
+        run: pnpm --filter @webevm/devnode exec playwright test --project=${{ matrix.browser }}
+
       # The cross-backend GATE. What is asserted here is load-INVARIANT --
       # execution-gas equality and keccak-chain equality across every backend --
       # which is precisely what survives a noisy shared CI runner. The MGas/s and
