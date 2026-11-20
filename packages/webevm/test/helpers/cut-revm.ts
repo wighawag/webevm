@@ -116,6 +116,9 @@
  *                      Osaka precompiles) to the default engine's literals
  *   - 'block-clock' : the SHARED block-clock battery (helpers/block-clock.ts):
  *                      the time cheats stamp the block revm executes in
+ *   - 'state-cheat-aliases': the SHARED state-cheat-alias battery
+ *                      (helpers/state-cheat-aliases.ts): the `hardhat_*` and
+ *                      `anvil_*` state cheats write what revm then executes over
  */
 import type {
 	CodeUnderTest,
@@ -143,6 +146,7 @@ import {runRevmStateHistoryPersistence} from './revm-state-history-persistence.j
 import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {runGenesisTimestampChecks} from './genesis-timestamp.js';
 import {runBlockClockChecks} from './block-clock.js';
+import {runStateCheatAliasChecks} from './state-cheat-aliases.js';
 import {createRevmEngine} from '../../src/revm.js';
 import {runTrieDerivedChecks} from './trie-derived.js';
 import {runStorageCollisionChecks} from './storage-collision.js';
@@ -401,7 +405,8 @@ const cut: CodeUnderTest = {
 			ctx.params.mode === 'statetest' ||
 			ctx.params.mode === 'genesis-timestamp' ||
 			ctx.params.mode === 'hardforks' ||
-			ctx.params.mode === 'block-clock'
+			ctx.params.mode === 'block-clock' ||
+			ctx.params.mode === 'state-cheat-aliases'
 		) {
 			try {
 				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
@@ -416,6 +421,10 @@ const cut: CodeUnderTest = {
 					results.revmHardforks = await runHardforkChecks({makeEngine});
 				else if (ctx.params.mode === 'block-clock')
 					results.revmBlockClock = await runBlockClockChecks({makeEngine});
+				else if (ctx.params.mode === 'state-cheat-aliases')
+					results.revmStateCheatAliases = await runStateCheatAliasChecks({
+						makeEngine,
+					});
 				else if (ctx.params.mode === 'genesis-timestamp')
 					results.revmGenesisTimestamp = await runGenesisTimestampChecks({
 						makeEngine,
