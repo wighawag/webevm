@@ -504,6 +504,41 @@ export class OverlayStorageStateManager extends SimpleStateManager {
 	}
 
 	/**
+	 * REPLACE the open record with `changes`, which the caller hands over (it must
+	 * not use it afterwards). INTERNAL: the node's `evm_revert` puts back the open
+	 * record it held when the snapshot was taken, so the writes made since the head
+	 * was mined are attributed to the next block exactly as they would have been.
+	 * A no-op with recording off; refused with a checkpoint open, as
+	 * {@link takeChangeSet} is.
+	 */
+	replaceChangeSet(changes: ChangeSet): void {
+		const levels = this.changeLevels;
+		if (levels === undefined) return;
+		if (levels.length !== 1)
+			throw new Error(
+				'webevm: the change set was replaced with a checkpoint open.',
+			);
+		levels[0] = changes;
+	}
+
+	/**
+	 * EMPTY THE STATE: no account, no code, no storage. INTERNAL: the node's
+	 * `evm_revert` runs it before `loadState` replays the snapshot, because a load
+	 * WRITES the dump's entries over what is there and removes nothing, so an
+	 * account created after the snapshot would otherwise survive the revert. The
+	 * frames are emptied IN PLACE (the revm store reads the top frame live, ADR
+	 * 0010) and the change set is left alone: the load that follows is a baseline
+	 * and takes it. Refused with a checkpoint open.
+	 */
+	clearState(): void {
+		if (this.accountStack.length !== 1)
+			throw new Error('webevm: the state was cleared with a checkpoint open.');
+		this.accountStack[0].clear();
+		this.codeStack[0].clear();
+		this.storageOverlays = [emptyOverlay()];
+	}
+
+	/**
 	 * Run a PURE READ (`eth_call`, `eth_estimateGas`, a state override) with
 	 * recording suspended. Its levels are always reverted, so recording there is
 	 * wasted work that the revert would throw away: a COST rule. Correctness does

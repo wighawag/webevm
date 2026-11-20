@@ -3443,6 +3443,24 @@ export async function createNodeWithInternals(
 				return null;
 			}
 
+			// ---- Snapshots: roll the whole chain back (see `takeSnapshot`) ----
+			// anvil serves `anvil_snapshot` / `anvil_revert` with `evm_*` as serde
+			// aliases (foundry crates/anvil/core/src/eth/mod.rs, `EvmSnapshot`,
+			// `EvmRevert`), so the two names share one counter here as there.
+			case 'evm_snapshot':
+			case 'anvil_snapshot': {
+				// params: [], and returns the new id as a quantity ("0x0" first).
+				return takeSnapshot();
+			}
+			case 'evm_revert':
+			case 'anvil_revert': {
+				// params: [id], a quantity (hex or decimal string, or a JSON number).
+				// Returns true, or false for an id this node does not hold.
+				return revertToSnapshot(
+					quantity(params[0], args.method, 'a snapshot id', 256n),
+				);
+			}
+
 			case 'eth_gasPrice':
 				return numHex(gasPrice);
 			case 'eth_maxPriorityFeePerGas':
@@ -3894,6 +3912,118 @@ export async function createNodeWithInternals(
 			derivedTrie = await DerivedStateTrie.build(sm, common);
 	}
 
+	/**
+	 * SNAPSHOTS: `evm_snapshot` returns an id for the chain as it stands, and
+	 * `evm_revert(id)` puts it back, under anvil's names too (`anvil_snapshot` /
+	 * `anvil_revert`). Why the core and why these names: ADR 0016's principle (a
+	 * cheat that is not account policy, under the names the other dev nodes use),
+	 * applied in ADR 0017.
+	 *
+	 * BUILT ON THE NODE'S OWN `dumpState` / `loadState`: a snapshot holds a dump,
+	 * a revert empties the state and loads it, so everything a dump carries
+	 * (state, blocks, receipts, transactions, logs, the `stateHistory` window) is
+	 * restored by construction, and the derived trie is rebuilt. Both run here,
+	 * inside the serialisation point every request runs in (ADR 0012). The cost is
+	 * O(state) per snapshot and per revert; it is measured and stated in the
+	 * README (docs/spikes/snapshots-in-the-core/measurement.md). A cheaper
+	 * mechanism over the undo log (ADR 0013) is a later change if that asks for one.
+	 *
+	 * WHAT A DUMP DOES NOT CARRY, AND A SNAPSHOT DOES, because a snapshot is of
+	 * this NODE rather than a portable chain:
+	 *
+	 *   - the undo log EXACTLY, and the open record (writes since the head was
+	 *     mined). A dump folds the open record into the head's record and a load
+	 *     makes those writes part of the head (`dumpHistory`), which answers every
+	 *     read the same until the next block is mined, but then the old head would
+	 *     read the cheats where a node that never reverted reads the values before
+	 *     them. So the records are kept unfolded and put back after the load.
+	 *   - the PENDING transactions (manual and interval mining): Hardhat restores
+	 *     its mem pool (EDR crates/edr_provider/src/data.rs, `make_snapshot` /
+	 *     `revert_to_snapshot`, `mem_pool`) and anvil its pool (foundry
+	 *     crates/anvil/src/eth/api.rs, `evm_snapshot` / `evm_revert`,
+	 *     `pool_snapshots`).
+	 *   - THE CLOCK (ADR 0016), decided as anvil does it: a pending NEXT TIMESTAMP
+	 *     and the OFFSET are restored, the INTERVAL is kept. anvil's `TimeSnapshot`
+	 *     holds the offset and the next timestamp but not the interval
+	 *     (crates/anvil/src/eth/backend/time.rs, `snapshot` / `restore`). Hardhat
+	 *     restores its next timestamp and its offset too (it has no interval), but
+	 *     ADDS the wall-clock seconds elapsed since the snapshot to the offset, so
+	 *     that its clock reads what it read at the snapshot (EDR `data.rs`: "now +
+	 *     new_offset == snapshot_date + old_offset"). That is not done here: anvil
+	 *     is this node's reference where the two differ (ADR 0016), and on a pinned
+	 *     `blockEnv.timestamp`, the clock a reproducible test uses, there is no wall
+	 *     time to compensate for.
+	 *
+	 * IDS AND CONSUMPTION ARE ANVIL'S: one counter for both names, the first id
+	 * "0x0" (anvil's `StateSnapshots` starts at zero, foundry
+	 * crates/evm/core/src/state_snapshot.rs; Hardhat's starts at 1, as ganache's
+	 * did, and is a `U64` quantity too), never reissued. Reverting to an id
+	 * CONSUMES it and every id after it, earlier ones staying usable (both nodes:
+	 * anvil `StateSnapshots::remove` and `revert_state_snapshot`'s `retain`, EDR's
+	 * `split_off`); an id not held is `false`, not an error, on both. viem sends
+	 * `evm_snapshot` / `evm_revert` in every test-client mode and discards the
+	 * revert's result.
+	 *
+	 * NOT DONE, on purpose: a revert emits no `newHeads` (the head moves back, and
+	 * the subscription is for new heads; anvil emits removed logs to log filters,
+	 * which this node has none of). A `loadState` leaves snapshots held, since
+	 * each is a whole chain of its own, so a revert after a load brings back the
+	 * chain from before it. Snapshots live in memory and are not persisted.
+	 */
+	interface NodeSnapshot {
+		readonly state: SerializedState;
+		readonly sealed: SerializedHistoryBlock[];
+		readonly historyFloor: number;
+		readonly open: SerializedHistoryBlock | undefined;
+		readonly headBlock: SerializedHistoryBlock | undefined;
+		readonly pending: SubmittedTx[];
+		readonly nextTimestamp: bigint | undefined;
+		readonly timeOffset: bigint;
+	}
+	const snapshots = new Map<bigint, NodeSnapshot>();
+	let nextSnapshotId = 0n;
+
+	async function takeSnapshot(): Promise<string> {
+		const open = changeSets?.peekChangeSet();
+		const id = nextSnapshotId++;
+		snapshots.set(id, {
+			state: await dumpState(),
+			sealed: sealed.map((r) => serializeChangeSet(r.number, r.changes)),
+			historyFloor,
+			open: open && serializeChangeSet(latestNumber, open),
+			headBlock:
+				headBlockChangeSet &&
+				serializeChangeSet(latestNumber, headBlockChangeSet),
+			pending: [...pending],
+			nextTimestamp,
+			timeOffset,
+		});
+		return numHex(id);
+	}
+
+	async function revertToSnapshot(id: bigint): Promise<boolean> {
+		const snapshot = snapshots.get(id);
+		if (snapshot === undefined) return false;
+		for (const held of [...snapshots.keys()])
+			if (held >= id) snapshots.delete(held);
+		// A load writes over what is there and removes nothing, so the state is
+		// emptied first: an account created after the snapshot must not survive.
+		sm.clearState();
+		await loadState(snapshot.state);
+		sealed.length = 0;
+		for (const r of snapshot.sealed)
+			sealed.push({number: r.number, changes: deserializeChangeSet(r)});
+		historyFloor = snapshot.historyFloor;
+		if (snapshot.open !== undefined)
+			sm.replaceChangeSet(deserializeChangeSet(snapshot.open));
+		headBlockChangeSet =
+			snapshot.headBlock && deserializeChangeSet(snapshot.headBlock);
+		pending.splice(0, pending.length, ...snapshot.pending);
+		nextTimestamp = snapshot.nextTimestamp;
+		timeOffset = snapshot.timeOffset;
+		return true;
+	}
+
 	// ---------- persistence auto-load on creation ----------
 	if (options.persistence) {
 		const saved = await options.persistence.load();
@@ -3961,7 +4091,11 @@ export async function createNodeWithInternals(
 			// does, so they persist like `mine()` does.
 			args.method === 'evm_mine' ||
 			args.method === 'anvil_mine' ||
-			args.method === 'hardhat_mine'
+			args.method === 'hardhat_mine' ||
+			// A revert replaces the chain, so the store must hold the reverted one
+			// (an id the node did not hold changed nothing).
+			((args.method === 'evm_revert' || args.method === 'anvil_revert') &&
+				out === true)
 		) {
 			await persistIfNeeded();
 		}

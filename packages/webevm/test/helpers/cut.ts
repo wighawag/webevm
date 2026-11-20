@@ -113,6 +113,13 @@
  *                            have the `evm_*` cheat's effect, and viem's test
  *                            client drives them. ENGINE-PARAMETERISED (revm
  *                            through ./cut-revm.ts)
+ *   - 'snapshots'          : `evm_snapshot` / `evm_revert` (and anvil's names):
+ *                            ids, consumption, what a revert restores, the
+ *                            clock, pending transactions, persistence and
+ *                            viem's test client. ENGINE-PARAMETERISED (revm
+ *                            through ./cut-revm.ts)
+ *   - 'snapshot-cost'      : what a snapshot and a revert cost at a few state
+ *                            sizes (the README's numbers)
  *
  * The cross-backend PERFORMANCE benchmark (vs raw @ethereumjs/* and tevm) lives in
  * the separate `webevm-benchmarks` package, so this library package's
@@ -157,6 +164,8 @@ import {runLogBlockTimestampChecks} from './log-block-timestamp.js';
 import {runHardforkChecks, runHardforkConstructionChecks} from './hardforks.js';
 import {runBlockClockChecks} from './block-clock.js';
 import {runStateCheatAliasChecks} from './state-cheat-aliases.js';
+import {runSnapshotChecks} from './snapshots.js';
+import {runSnapshotCost} from './snapshot-cost.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
@@ -582,6 +591,26 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'state-cheat-aliases') {
 			try {
 				results.stateCheatAliases = await runStateCheatAliasChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// snapshots: evm_snapshot / evm_revert and anvil's names for them.
+		if (ctx.params.mode === 'snapshots') {
+			try {
+				results.snapshots = await runSnapshotChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// snapshot-cost: the time a snapshot and a revert take, by state size.
+		if (ctx.params.mode === 'snapshot-cost') {
+			try {
+				results.snapshotCost = await runSnapshotCost();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

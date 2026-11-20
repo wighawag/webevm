@@ -199,6 +199,7 @@ method-not-found (`-32601`) — it never fakes a result.
 | `evm_mine` | `[]`, `[timestamp]` or `[{timestamp?, blocks?}]` (anvil's and ganache's forms): mine `blocks` (default 1) blocks now, the first with whatever is pending (an empty block under auto mining), the first stamped `timestamp` if given; returns `"0x0"`. The RPC form of `node.mine()` |
 | `anvil_mine` / `hardhat_mine` | `[blocks?, interval?]`, what viem's `mine()` sends: `blocks` (default 1; 0 mines none) blocks now; an `interval` moves the clock on that many seconds a block, 0 letting a block repeat its parent's timestamp, as on anvil (which takes `hardhat_mine` as an alias); returns `null` |
 | `anvil_setBlockTimestampInterval` / `anvil_removeBlockTimestampInterval` | `[seconds]`: every block is its parent's timestamp plus `seconds` (0 repeats it), the wall clock not consulted, so a chain's timestamps do not depend on how fast it ran; a next timestamp still wins for its block; returns `null`. Remove returns whether one was set. Anvil's names (no other dev node has these), which viem's `setBlockTimestampInterval` / `removeBlockTimestampInterval` send in anvil mode |
+| `evm_snapshot` / `evm_revert`, and the same as `anvil_snapshot` / `anvil_revert` | roll the whole chain back. `evm_snapshot` returns an id (a quantity: `"0x0"` first, as on anvil, never reissued; Hardhat starts at `"0x1"`); `evm_revert [id]` restores what a consumer can read as it was (state, blocks and their hashes, receipts, transactions, logs, `getStateRoot()`, the [`stateHistory`](#state-reads-at-past-blocks-statehistory) window) plus the transactions waiting to be mined, and returns `true`, or `false` for an id it does not hold. Reverting **consumes** that snapshot and every one taken after it, as on Hardhat and anvil. The [clock](#mining) follows anvil: a pending next timestamp and the `evm_increaseTime` offset are restored, the interval is kept. With persistence, a revert saves the reverted chain. viem's `snapshot` / `revert` test actions work unchanged in every mode. See [Snapshots](#snapshots-evm_snapshot--evm_revert) for the cost |
 | `evm_sendRawTransactionAs` / `evm_sendRawTransactionSyncAs` | `[raw, from]` — execute as `from`, **skipping ecrecover**. Only exist when `senderMode: 'trusted'`; otherwise a loud `-32601`. See [Sender mode](#sender-mode-recover-authenticated-default-vs-trusted-no-ecrecover) |
 
 ### Intentionally NOT supported (loud `-32601`)
@@ -730,7 +731,29 @@ await test.setBlockTimestampInterval({interval: 1}); // reproducible from here o
 
 An interval makes a simulated chain reproducible: its timestamps no longer depend
 on how fast it ran. The clock is a setting of the node, not part of `dumpState`;
-`loadState` drops a pending next timestamp. See [ADR 0016](docs/adr/0016-the-node-has-a-clock-and-time-cheats-move-it.md).
+`loadState` drops a pending next timestamp. An [`evm_revert`](#snapshots-evm_snapshot--evm_revert) restores a pending next timestamp and the offset and keeps the interval, as anvil does. See [ADR 0016](docs/adr/0016-the-node-has-a-clock-and-time-cheats-move-it.md).
+
+## Snapshots (`evm_snapshot` / `evm_revert`)
+
+Tests that share one deployment and roll back between cases:
+
+```ts
+const test = createTestClient({mode: 'anvil', transport: custom(node)});
+const id = await test.snapshot(); // after the shared deployment
+// ... a test case ...
+await test.revert({id}); // the chain is back where it was; take a new snapshot for the next case
+```
+
+A snapshot holds the node's own `dumpState()` and a revert loads it back, so the cost is proportional to the state, not to what changed since. Measured in Chromium (median of five, genesis of N accounts with one storage slot each; `test/snapshot-cost.spec.ts`, recorded in `docs/spikes/snapshots-in-the-core/measurement.md`):
+
+| accounts | dump size | snapshot | revert | revert with `computeStateRoot` |
+|---:|---:|---:|---:|---:|
+| 100 | 50 KB | 0.3 ms | 1.3 ms | 10 ms |
+| 1,000 | 0.4 MB | 3 ms | 5 ms | 122 ms |
+| 10,000 | 3.8 MB | 28 ms | 45 ms | 1.46 s |
+| 50,000 | 19 MB | 145 ms | 258 ms | not measured |
+
+Each snapshot held keeps its dump in memory until it is consumed. With `computeStateRoot`, a revert rebuilds the derived trie from the restored state, which is what dominates; a node that needs fast reverts over a large state should leave it off. Snapshots are not persisted, and a `loadState` leaves them held.
 
 ## On comprehensive EVM test fixtures (`ethereum/tests`)
 

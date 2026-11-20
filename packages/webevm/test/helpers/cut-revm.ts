@@ -119,6 +119,9 @@
  *   - 'state-cheat-aliases': the SHARED state-cheat-alias battery
  *                      (helpers/state-cheat-aliases.ts): the `hardhat_*` and
  *                      `anvil_*` state cheats write what revm then executes over
+ *   - 'snapshots'    : the SHARED snapshot battery (helpers/snapshots.ts):
+ *                      `evm_snapshot` / `evm_revert` restore what revm then
+ *                      executes the continuing chain over
  */
 import type {
 	CodeUnderTest,
@@ -147,6 +150,7 @@ import {runRevmGenesisCheats} from './revm-genesis-cheats.js';
 import {runGenesisTimestampChecks} from './genesis-timestamp.js';
 import {runBlockClockChecks} from './block-clock.js';
 import {runStateCheatAliasChecks} from './state-cheat-aliases.js';
+import {runSnapshotChecks} from './snapshots.js';
 import {createRevmEngine} from '../../src/revm.js';
 import {runTrieDerivedChecks} from './trie-derived.js';
 import {runStorageCollisionChecks} from './storage-collision.js';
@@ -406,7 +410,8 @@ const cut: CodeUnderTest = {
 			ctx.params.mode === 'genesis-timestamp' ||
 			ctx.params.mode === 'hardforks' ||
 			ctx.params.mode === 'block-clock' ||
-			ctx.params.mode === 'state-cheat-aliases'
+			ctx.params.mode === 'state-cheat-aliases' ||
+			ctx.params.mode === 'snapshots'
 		) {
 			try {
 				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
@@ -425,6 +430,8 @@ const cut: CodeUnderTest = {
 					results.revmStateCheatAliases = await runStateCheatAliasChecks({
 						makeEngine,
 					});
+				else if (ctx.params.mode === 'snapshots')
+					results.revmSnapshots = await runSnapshotChecks({makeEngine});
 				else if (ctx.params.mode === 'genesis-timestamp')
 					results.revmGenesisTimestamp = await runGenesisTimestampChecks({
 						makeEngine,
