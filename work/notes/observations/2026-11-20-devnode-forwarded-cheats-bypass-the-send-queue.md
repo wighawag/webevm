@@ -1,0 +1,3 @@
+# Forwarded cheats and snapshots bypass the dev node's send queue
+
+2026-11-20. In `packages/devnode/src/dev-node.ts`, the impersonation methods run on the send queue (`transactions.inOrder`) so a send issued before them sees the state as it was, but forwarded cheats (`evm_revert`, `*_setNonce`, `*_setBalance`, ...) go straight to `node.request`. A caller that fires `eth_sendTransaction` and then `evm_revert` (or a `setNonce`) without awaiting the send could have the cheat land between the send's pending-nonce read and its submission. Not hit by any test; noticed while writing `test/cheat.spec.ts`.

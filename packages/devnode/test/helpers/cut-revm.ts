@@ -7,6 +7,7 @@
  *   - 'dev-node': ./dev-node-checks.ts, every node created on revm
  *   - 'send':     ./send-checks.ts, every node created on revm
  *   - 'impersonation': ./impersonation-checks.ts, every node created on revm
+ *   - 'cheats':   ./cheat-checks.ts, every node created on revm
  */
 import type {
 	CodeUnderTest,
@@ -18,6 +19,7 @@ import wasm from 'revm-wasm/revm.wasm';
 import {runDevNodeChecks} from './dev-node-checks.js';
 import {runSendChecks} from './send-checks.js';
 import {runImpersonationChecks} from './impersonation-checks.js';
+import {runCheatChecks} from './cheat-checks.js';
 
 const cut: CodeUnderTest = {
 	name: '@webevm/devnode (revm)',
@@ -52,6 +54,17 @@ const cut: CodeUnderTest = {
 			try {
 				const module = await WebAssembly.compile(wasm);
 				results.impersonation = await runImpersonationChecks(() =>
+					createRevmEngine({wasm: module}),
+				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings: [], errors, env: captureEnv()};
+		}
+		if (ctx.params.mode === 'cheats') {
+			try {
+				const module = await WebAssembly.compile(wasm);
+				results.cheats = await runCheatChecks(() =>
 					createRevmEngine({wasm: module}),
 				);
 			} catch (e) {
