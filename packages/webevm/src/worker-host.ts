@@ -28,7 +28,8 @@
  * itself: it enumerates the keys of a reference node INSTANCE, and an optional
  * field that instance does not carry is invisible to it.
  *
- * A MISUSE OF {@link WorkerHostOptions.createEngine} IS A VALUE, NEVER A THROW,
+ * A MISUSE OF {@link WorkerHostOptions.createEngine} (or of
+ * {@link WorkerHostOptions.createNode}) IS A VALUE, NEVER A THROW,
  * and that ordering is the whole of why: `expose()` registers comlink's message
  * listener, so a module that throws BEFORE reaching it answers the main thread
  * nothing at all and `createWorkerNode()` stays pending forever. The refusal is
@@ -80,7 +81,38 @@ export interface WorkerHostOptions {
 	 * still cannot come from there (see `./worker-client.ts`'s refusal).
 	 */
 	createEngine?: EngineSupplier;
+	/**
+	 * Create the NODE on this thread yourself, from the main thread's options.
+	 * Omit it and the worker calls webevm's own `createNode` (what `worker-entry`
+	 * does). When given, it is called ONCE PER `createNode()` with the options the
+	 * main thread passed to `createWorkerNode()`, the engine from
+	 * {@link createEngine} already merged in when that is set, and the node it
+	 * resolves to is what the main thread drives, through the same single proxy:
+	 *
+	 *   exposeNode({createNode: (options) => createDevNode({...options, accounts: 10})});
+	 *
+	 * WHY A FACTORY, and not a hook that wraps the node afterwards: a layer that
+	 * funds accounts AT GENESIS (as `@webevm/devnode` does, like anvil and
+	 * Hardhat) has to take part in CREATING the node, because genesis is decided
+	 * before the node exists. And why an option here rather than a second worker
+	 * host in that layer: the thread-crossing proxy must stay singular (see
+	 * {@link nodeProxy}). `docs/adr/0017-dev-accounts-live-in-webevm-devnode-a-slimnode-decorator-funded-at-genesis.md`.
+	 *
+	 * The name is `createNode` because it IS a `createNode`: same options, same
+	 * result, and the default is webevm's own function of that name. A factory
+	 * that throws or rejects makes the main thread's `createWorkerNode()` reject
+	 * with its message; one that is not a function is refused the way a bad
+	 * {@link createEngine} is, as a value (both signals).
+	 */
+	createNode?: NodeFactory;
 }
+
+/**
+ * Creates the {@link SlimNode} for ONE `createNode()` call on the worker thread,
+ * from the main thread's options (the engine merged in). webevm's own
+ * `createNode` is one; a decorating layer passes its own.
+ */
+export type NodeFactory = (options: NodeOptions) => Promise<SlimNode>;
 
 /**
  * THE ONE `SlimNode` PROXY. Comlink cannot pass the node itself (its methods are
@@ -134,7 +166,7 @@ function nodeProxy(node: SlimNode): SlimNode {
  * of your own; this is the same object `worker-entry` exposes.
  */
 export function createNodeWorkerApi(hostOptions: WorkerHostOptions = {}) {
-	const {createEngine} = hostOptions;
+	const {createEngine, createNode: nodeFactory} = hostOptions;
 	// THE REFUSAL IS A VALUE. Passing the ENGINE (or the promise of one) where its
 	// FACTORY belongs is the one plausible mistake at this seam, and it is refused
 	// with a real message rather than left to become a `TypeError` from inside
@@ -143,7 +175,14 @@ export function createNodeWorkerApi(hostOptions: WorkerHostOptions = {}) {
 	// the worker registers no message listener, and an awaited `createWorkerNode()`
 	// on the main thread never settles at all. Recorded here, said out loud here,
 	// and thrown where a caller can catch it.
-	const refusal = engineSupplierRefusal(createEngine);
+	//
+	// Both options are checked, and a module that gets BOTH wrong hears about both
+	// at once rather than fixing one only to meet the other.
+	const refusals = [
+		engineSupplierRefusal(createEngine),
+		nodeFactoryRefusal(nodeFactory),
+	].filter((r): r is string => r !== undefined);
+	const refusal = refusals.length > 0 ? refusals.join('\n') : undefined;
 	// THE EARLY SIGNAL, on the thread the mistake was written on and at the moment
 	// it was made: a developer with the worker console open reads it before anybody
 	// asks for a node. It is not the only one, precisely because a bundled app's
@@ -156,10 +195,14 @@ export function createNodeWorkerApi(hostOptions: WorkerHostOptions = {}) {
 			// fails with this text instead of hanging.
 			if (refusal !== undefined) throw new Error(refusal);
 			// The main thread's options pass through UNCHANGED; the engine, and only
-			// the engine, is this thread's.
-			const node = await createNode(
-				createEngine ? {...options, engine: await createEngine()} : options,
-			);
+			// the engine, is this thread's. Then whichever factory makes the node:
+			// the consumer's when given (a throw or rejection from it crosses to the
+			// main thread as `createWorkerNode()`'s rejection), webevm's own
+			// otherwise.
+			const nodeOptions = createEngine
+				? {...options, engine: await createEngine()}
+				: options;
+			const node = await (nodeFactory ?? createNode)(nodeOptions);
 			return proxy(nodeProxy(node));
 		},
 	};
@@ -194,6 +237,35 @@ function engineSupplierRefusal(createEngine: unknown): string | undefined {
 	return (
 		`webevm/worker-host: \`createEngine\` must be a FUNCTION that builds an engine on this thread, not an engine (received ${describe(createEngine)}). ` +
 		'Pass `{createEngine: () => createRevmEngine({wasm})}`, i.e. a function that returns the engine, rather than an engine you built already. ' +
+		why
+	);
+}
+
+/**
+ * The message for a `createNode` factory that is not a function, or `undefined`
+ * when it is one (`undefined` itself being webevm's own `createNode`).
+ *
+ * The THENABLE case names itself for the same reason it does for `createEngine`:
+ * `createNode: createDevNode({...})` (no arrow) built a node at module scope and
+ * passed the promise of it, one arrow away from right, and a node built there
+ * would not even have the main thread's options.
+ */
+function nodeFactoryRefusal(nodeFactory: unknown): string | undefined {
+	if (nodeFactory === undefined || typeof nodeFactory === 'function') {
+		return undefined;
+	}
+	const why =
+		"It is called ONCE PER createNode(), with the main thread's options (the engine merged in when `createEngine` is set), and the node it resolves to is the one the main thread drives.";
+	if (typeof (nodeFactory as {then?: unknown} | null)?.then === 'function') {
+		return (
+			'webevm/worker-host: `createNode` must be a FUNCTION that creates the node from the options it is given, and it was given a PROMISE of one: the factory was CALLED here instead of being passed. ' +
+			'Write `{createNode: (options) => myCreateNode(options)}`, not `{createNode: myCreateNode(...)}`. ' +
+			why
+		);
+	}
+	return (
+		`webevm/worker-host: \`createNode\` must be a FUNCTION that creates the node from the options it is given (received ${describe(nodeFactory)}). ` +
+		"Pass `{createNode: (options) => myCreateNode(options)}`, or omit it for webevm's own createNode. " +
 		why
 	);
 }

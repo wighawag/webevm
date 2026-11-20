@@ -126,6 +126,17 @@ the worker logs it the moment the module loads, AND your `await
 createWorkerNode(...)` on the main thread REJECTS with the same text, so the
 mistake reaches the thread you made it on and the thread that was waiting.
 
+**Creating the node yourself: `createNode`.** A layer that must take part in creating the node inside the worker (funding accounts at genesis, say, which has to happen before the node exists) passes a node FACTORY:
+
+```ts
+exposeNode({
+	createEngine: () => createRevmEngine({wasm}), // optional, as before
+	createNode: (options) => myCreateNode({...options, accounts: 10}),
+});
+```
+
+It is called once per node with the options your main thread passed to `createWorkerNode()`, the engine from `createEngine` already merged in when that is set, and must resolve to a `SlimNode` (typed `(options: NodeOptions) => Promise<SlimNode>`). The node it returns is the one your main thread drives, through the same proxy as always, every member included. Omit it and the worker calls webevm's own `createNode`, exactly as before. A factory that throws or rejects makes `createWorkerNode()` reject with its message; one that is not a function is refused like a bad `createEngine`, logged by the worker AND rejecting `createWorkerNode()` with the same text.
+
 **Do not `await` at the top level of a worker module before `exposeNode()`.** A
 worker module that awaits something slower than a microtask (fetching wasm,
 opening a database, `await createRevmEngine(...)`) before it calls `exposeNode()`
