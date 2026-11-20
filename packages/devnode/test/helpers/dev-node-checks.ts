@@ -319,7 +319,7 @@ export async function runDevNodeChecks(makeEngine: MakeEngine) {
 			params: ['0x00000000000000000000000000000000000000bb', 'latest'],
 		},
 		{method: 'webevm_noSuchMethod', params: []},
-		{method: 'eth_signTransaction', params: [{}]},
+		{method: 'eth_signTypedData_v3', params: []},
 		{method: 'eth_getBlockByNumber', params: ['0x99', false]},
 		{method: 'eth_getBalance', params: ['not an address', 'latest']},
 	];
@@ -331,15 +331,22 @@ export async function runDevNodeChecks(makeEngine: MakeEngine) {
 			dev: await outcome(dev.request(args)),
 		});
 	}
-	// The one method in the sample the layer ANSWERS rather than forwards: the
-	// core refuses `eth_sendTransaction` with -32601, the layer with its own
-	// refusal of a request with no `from` (the send battery is ./send-checks.ts).
+	// Methods the layer ANSWERS rather than forwards: the core refuses
+	// `eth_sendTransaction` and `eth_signTransaction` with -32601, the layer with
+	// its own refusal of a request with no `from` (the batteries are
+	// ./send-checks.ts and ./sign-checks.ts).
 	const answered = {
 		plain: await outcome(
 			plain.request({method: 'eth_sendTransaction', params: [{}]}),
 		),
 		dev: await outcome(
 			dev.request({method: 'eth_sendTransaction', params: [{}]}),
+		),
+		signPlain: await outcome(
+			plain.request({method: 'eth_signTransaction', params: [{}]}),
+		),
+		signDev: await outcome(
+			dev.request({method: 'eth_signTransaction', params: [{}]}),
 		),
 	};
 	// Every other member delegates.

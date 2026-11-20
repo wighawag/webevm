@@ -56,12 +56,27 @@
  * - THE SIGNING `Common` is the node's chain ID on Prague, the fork with every
  *   type this layer builds. The NODE's fork decides what is accepted: a type 4
  *   on Cancun is refused by the node in its own words, not by the signer.
+ *
+ * `eth_signTransaction` (task `devnode-signing-methods-and-eip-712`) is the
+ * same fill, the same types and the same refusals (each `-32602` and `4100`
+ * names `eth_signTransaction`), stopping before the submit. Its DECISIONS, each
+ * user-visible and reversible before 1.0:
+ *
+ * - IT RETURNS THE RAW SIGNED TRANSACTION AS A HEX STRING, as anvil does and as
+ *   viem's `signTransaction` over a JSON-RPC account reads it. Alternative:
+ *   geth's `{raw, tx}` object, which viem would hand back as an object.
+ * - IT RUNS ON THE SAME QUEUE AS THE SENDS, so its pending nonce counts every
+ *   send queued before it. Two signs with no send between them read the same
+ *   nonce: nothing was submitted, as on anvil.
+ * - Its `4100` names only the `accounts` remedy: impersonation never signs
+ *   (ADR 0017).
  */
 import {Common, Hardfork, Mainnet} from '@ethereumjs/common';
 import {createTx, type TypedTxData} from '@ethereumjs/tx';
 import {bytesToHex} from '@ethereumjs/util';
 import {RpcError, type SlimNode} from 'webevm';
 import type {DevAccount} from './accounts.js';
+import {noKeyMessage} from './sign.js';
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const HEX_QUANTITY = /^0x[0-9a-fA-F]+$/;
@@ -79,8 +94,15 @@ const BLOB_FIELDS = [
 
 type Request = Record<string, unknown>;
 
+/**
+ * A malformed request, thrown by the helpers below and turned into a `-32602`
+ * naming the method that was called (`eth_sendTransaction` or
+ * `eth_signTransaction`) where the request is built.
+ */
+class InvalidRequest extends Error {}
+
 function invalid(message: string): never {
-	throw new RpcError(-32602, `eth_sendTransaction: ${message}`);
+	throw new InvalidRequest(message);
 }
 
 /** A request's quantity as a bigint, or `undefined` when it is absent. */
@@ -130,7 +152,7 @@ function envelopeType(p: Request): 0 | 1 | 2 | 4 {
 
 	const conflict = (field: string) =>
 		invalid(
-			`\`${field}\` cannot be carried by a type ${type} transaction, and eth_sendTransaction sends every field it is given rather than dropping one. Remove it, or ${type === 0 || type === 1 ? 'remove `gasPrice` and pass EIP-1559 fees' : 'pick a type that carries it'}.`,
+			`\`${field}\` cannot be carried by a type ${type} transaction, and a dev account's transaction carries every field it is given rather than dropping one. Remove it, or ${type === 0 || type === 1 ? 'remove `gasPrice` and pass EIP-1559 fees' : 'pick a type that carries it'}.`,
 		);
 	if (type === 0 || type === 1) {
 		for (const f of FEE_1559) if (present(p, f)) conflict(f);
@@ -195,14 +217,25 @@ function authorization(entry: unknown): Record<string, string> {
 	return out;
 }
 
+/** The two transaction methods of the layer, sharing one queue. */
+export interface TransactionMethods {
+	/** `eth_sendTransaction`: fill, sign, submit; resolves to the hash. */
+	sendTransaction(params: unknown): Promise<string>;
+	/** `eth_signTransaction`: fill and sign as `eth_sendTransaction` does; resolves to the raw signed transaction, unsent. */
+	signTransaction(params: unknown): Promise<string>;
+}
+
+type TransactionMethod = 'eth_sendTransaction' | 'eth_signTransaction';
+
 /**
- * The layer's `eth_sendTransaction`: a function of the request's params, which
- * runs every send on one queue, signing with the given accounts' keys.
+ * The layer's `eth_sendTransaction` and `eth_signTransaction`: functions of the
+ * request's params, which run every send and every sign on ONE queue, signing
+ * with the given accounts' keys.
  */
-export function createSender(
+export function createTransactionMethods(
 	node: SlimNode,
 	accounts: readonly DevAccount[],
-): (params: unknown) => Promise<string> {
+): TransactionMethods {
 	const keys = new Map(accounts.map((a) => [a.address, a.privateKey]));
 	let common: Promise<{common: Common; chainId: bigint}> | undefined;
 	const signingCommon = () =>
@@ -222,7 +255,24 @@ export function createSender(
 			throw e;
 		}));
 
-	async function send(params: unknown): Promise<string> {
+	/** Fill and sign; `-32602` for a malformed request, named by `method`. */
+	async function build(
+		params: unknown,
+		method: TransactionMethod,
+	): Promise<{raw: string; from: string}> {
+		try {
+			return await fillAndSign(params, method);
+		} catch (e) {
+			if (e instanceof InvalidRequest)
+				throw new RpcError(-32602, `${method}: ${e.message}`);
+			throw e;
+		}
+	}
+
+	async function fillAndSign(
+		params: unknown,
+		method: TransactionMethod,
+	): Promise<{raw: string; from: string}> {
 		const p = (Array.isArray(params) ? params[0] : undefined) as unknown;
 		if (p === null || typeof p !== 'object' || Array.isArray(p))
 			invalid('expected one transaction request object as its parameter.');
@@ -236,9 +286,11 @@ export function createSender(
 		if (!privateKey)
 			throw new RpcError(
 				4100,
-				`eth_sendTransaction: ${from} is not a dev account, so @webevm/devnode holds no key to sign for it. ` +
-					`Configure its private key in the dev node's \`accounts\` option, or impersonate it ` +
-					`(impersonation is not available in this version of @webevm/devnode).`,
+				method === 'eth_sendTransaction'
+					? `eth_sendTransaction: ${from} is not a dev account, so @webevm/devnode holds no key to sign for it. ` +
+							`Configure its private key in the dev node's \`accounts\` option, or impersonate it ` +
+							`(impersonation is not available in this version of @webevm/devnode).`
+					: noKeyMessage(method, from),
 			);
 
 		const type = envelopeType(request);
@@ -335,18 +387,22 @@ export function createSender(
 			).map(authorization);
 		}
 
-		let raw: string;
 		try {
-			raw = bytesToHex(
+			const raw = bytesToHex(
 				createTx(txData as TypedTxData, {common})
 					.sign(privateKey, false)
 					.serialize(),
 			);
+			return {raw, from};
 		} catch (e) {
 			return invalid(
 				`the transaction could not be built: ${(e as Error).message}`,
 			);
 		}
+	}
+
+	async function send(params: unknown): Promise<string> {
+		const {raw, from} = await build(params, 'eth_sendTransaction');
 		return (await node.request(
 			node.senderMode === 'trusted'
 				? {method: 'evm_sendRawTransactionAs', params: [raw, from]}
@@ -354,12 +410,19 @@ export function createSender(
 		)) as string;
 	}
 
-	// The queue: each send starts when the one before it has settled, whatever
-	// its outcome, so a refused send cannot stall the ones behind it.
+	// The queue: each job starts when the one before it has settled, whatever
+	// its outcome, so a refused one cannot stall the ones behind it. A sign
+	// runs on it too, so it reads the pending nonce AFTER every send queued
+	// before it has been submitted.
 	let queue: Promise<unknown> = Promise.resolve();
-	return (params) => {
-		const job = queue.then(() => send(params));
+	function enqueue<T>(run: () => Promise<T>): Promise<T> {
+		const job = queue.then(run);
 		queue = job.catch(() => undefined);
 		return job;
+	}
+	return {
+		sendTransaction: (params) => enqueue(() => send(params)),
+		signTransaction: (params) =>
+			enqueue(async () => (await build(params, 'eth_signTransaction')).raw),
 	};
 }
