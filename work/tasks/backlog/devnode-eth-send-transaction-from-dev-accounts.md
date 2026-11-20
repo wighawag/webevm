@@ -4,7 +4,6 @@ slug: devnode-eth-send-transaction-from-dev-accounts
 spec: dev-node-package
 blockedBy: [devnode-package-dev-accounts-funded-at-genesis]
 covers: [3, 4, 10, 17]
-needsAnswers: true
 ---
 
 ## What to build
@@ -13,6 +12,7 @@ needsAnswers: true
 
 - **Filling**: nonce from the PENDING nonce (`eth_getTransactionCount` at `pending`, as `eth_fillTransaction` uses), gas from `eth_estimateGas` with the same request, fees from the node's fee market as `eth_fillTransaction` fills them (EIP-1559 by default, legacy when the request passes `gasPrice`). Unlike `eth_fillTransaction`, nothing the request names is dropped: type 0 for `gasPrice`, type 1 for `gasPrice` plus an `accessList`, an `accessList` carried on type 2, type 4 for an `authorizationList` (the node refuses it before Prague in its own words).
 - **The send path, by the node's sender mode**: on a `senderMode: 'trusted'` node through `evm_sendRawTransactionAs(raw, from)` with the REAL signature; on a `'recover'` node through `eth_sendRawTransaction`. The package README documents both paths and that such dumps stay replayable anywhere (ADR 0002's caveat is about fabricated signatures only).
+- **Signing dependency**: `@ethereumjs/common` (`^10.1.2`) is APPROVED as a direct dependency (maintainer, 2026-11-20; recorded in ADR 0017's list). Sign with `@ethereumjs/tx` against a `Common` built for the node's own chain ID and a hardfork that has every transaction type the node accepts (Prague, for type 4), never the default Mainnet one.
 - **Concurrency**: fill, sign and submit run as ONE operation on a per-layer queue, so concurrent sends from one account get consecutive nonces.
 - **Refusal**: a `from` that is not a dev account (and, until the impersonation task lands, not impersonated) is refused with a real error naming the remedies (configure the key; or enable impersonation), never a plausible result.
 
