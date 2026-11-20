@@ -99,6 +99,16 @@ export interface EarlySignalReport {
  *     to receive a rejection FROM. That is the hang, in one line.
  */
 export function reportEarlySignal(badCreateEngine: unknown): EarlySignalReport {
+	return reportHostOptionsEarlySignal({createEngine: badCreateEngine});
+}
+
+/**
+ * The same worker-side half for ANY host options, so a misused `createNode`
+ * factory (`./node-factory.ts`) is held to the same two properties.
+ */
+export function reportHostOptionsEarlySignal(
+	hostOptions: Record<string, unknown>,
+): EarlySignalReport {
 	const lines: string[] = [];
 	const realError = console.error;
 	console.error = (...args: unknown[]) => {
@@ -106,9 +116,7 @@ export function reportEarlySignal(badCreateEngine: unknown): EarlySignalReport {
 	};
 	let threw = 'DID_NOT_THROW';
 	try {
-		createNodeWorkerApi({
-			createEngine: badCreateEngine as never,
-		});
+		createNodeWorkerApi(hostOptions as never);
 	} catch (e) {
 		threw = String((e as Error)?.message ?? e);
 	} finally {

@@ -83,6 +83,12 @@
  *                            where the FACTORY belongs: the main thread must get
  *                            a REJECTION carrying the reason, never a promise that
  *                            never settles, and the worker must say so early too
+ *   - 'node-factory'       : a worker module that creates its own node through
+ *                            `exposeNode({createNode})`: the factory's node is
+ *                            what the main thread drives (every member), it gets
+ *                            the main thread's options with the engine merged in,
+ *                            and a non-function or rejecting factory rejects the
+ *                            main thread instead of hanging it
  *   - 'serve-on-port'      : a node SERVES its EIP-1193 `request` on a handed
  *                            `MessagePort` (`node.serveOn(port)`), worker-hosted
  *                            and main-thread alike, answering a consumer in
@@ -169,6 +175,7 @@ import {runSnapshotCost} from './snapshot-cost.js';
 import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
+import {runNodeFactoryChecks} from './node-factory.js';
 import {
 	serveOnPortFromWorker,
 	serveOnPortFromMainThread,
@@ -502,6 +509,20 @@ const cut: CodeUnderTest = {
 				// passes: an engine-shaped object, i.e. the non-promise branch of the
 				// message.
 				results.early = reportEarlySignal({id: 'pretend-engine'});
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// node-factory: a worker module that creates its own node through
+		// `exposeNode({createNode})`, driven by the ordinary client.
+		if (ctx.params.mode === 'node-factory') {
+			try {
+				Object.assign(
+					results,
+					await runNodeFactoryChecks(String(ctx.params.workerUrl)),
+				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

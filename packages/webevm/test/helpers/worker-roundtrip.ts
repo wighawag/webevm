@@ -167,23 +167,7 @@ export async function workerRoundtrip(workerUrl: string, sumTo: number) {
 	// was dropped from the proxy for a month reading as `undefined` on a property
 	// typed `'recover' | 'trusted'`; this reports exactly that class of gap for any
 	// field, including one added after this test was written.
-	const reference = await createNode({
-		chainId: CHAIN_ID,
-		miningConfig: {type: 'auto'},
-	});
-	const shapeGaps: string[] = [];
-	for (const key of Object.keys(reference) as (keyof SlimNode)[]) {
-		const mine = reference[key];
-		const theirs = (node as SlimNode)[key];
-		if (theirs === undefined) {
-			shapeGaps.push(`${key}: absent across the boundary`);
-		} else if (typeof theirs !== typeof mine) {
-			shapeGaps.push(
-				`${key}: ${typeof theirs} across the boundary, ${typeof mine} on the main thread`,
-			);
-		}
-	}
-	await reference.dispose();
+	const shapeGaps = await shapeGapsAgainstMainThread(node);
 
 	await node.dispose();
 	return {
@@ -197,4 +181,34 @@ export async function workerRoundtrip(workerUrl: string, sumTo: number) {
 		mainThreadSampleCount: sampleCount,
 		workerComputeMs,
 	};
+}
+
+/**
+ * The field-for-field parity check of 2c, on its own so every worker-hosted
+ * node can be held to it (the default worker's here, a `createNode` factory's
+ * in `./node-factory.ts`): a main-thread `createNode()` is the reference shape,
+ * and EVERY key it has must arrive across the boundary with the same kind of
+ * value. Empty means no gap.
+ */
+export async function shapeGapsAgainstMainThread(
+	node: SlimNode,
+): Promise<string[]> {
+	const reference = await createNode({
+		chainId: CHAIN_ID,
+		miningConfig: {type: 'auto'},
+	});
+	const shapeGaps: string[] = [];
+	for (const key of Object.keys(reference) as (keyof SlimNode)[]) {
+		const mine = reference[key];
+		const theirs = node[key];
+		if (theirs === undefined) {
+			shapeGaps.push(`${key}: absent across the boundary`);
+		} else if (typeof theirs !== typeof mine) {
+			shapeGaps.push(
+				`${key}: ${typeof theirs} across the boundary, ${typeof mine} on the main thread`,
+			);
+		}
+	}
+	await reference.dispose();
+	return shapeGaps;
 }
