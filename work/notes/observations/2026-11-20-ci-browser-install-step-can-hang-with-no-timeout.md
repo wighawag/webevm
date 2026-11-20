@@ -1,5 +1,0 @@
-# The CI `install browser` step can hang for the job's whole default timeout (2026-11-20)
-
-On PR #29 (`hardhat-and-anvil-names-for-the-state-cheats`), the `test (webkit)` job of run 44740368344 sat in its `install browser` step (`pnpm --filter webevm exec playwright install --with-deps webkit`, `.github/workflows/ci.yml`) for over 25 minutes, while the same step finished in seconds on the chromium job, and webkit's whole job normally finishes in about 3 to 4 minutes. Cancelling the run and re-running the failed job passed in 3m04s with no change to the branch, so the PR was not at fault. The log of the stuck attempt was lost with the cancel, so whether apt (`--with-deps`) or the browser download stalled is unknown.
-
-Nothing in `ci.yml` sets `timeout-minutes`, so a stall like this holds the job for GitHub's default of six hours and a PR waiting on green CI waits with it. A `timeout-minutes` on the test jobs (or on the install step) would turn the hang into a fast red that a re-run clears. That is a CI change, so it is a human's call. It was not made during the drive that saw the hang.
