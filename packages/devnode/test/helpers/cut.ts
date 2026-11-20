@@ -14,6 +14,8 @@
  *                 runs in Node
  *   - 'alloc':    `toAllocs`, the alloc export for forge (./alloc-checks.ts),
  *                 the same battery alloc.spec.ts also runs in Node
+ *   - 'impersonation': `hardhat_` / `anvil_impersonateAccount` and the sends
+ *                 they enable (./impersonation-checks.ts)
  */
 import type {
 	CodeUnderTest,
@@ -24,6 +26,7 @@ import {runDevNodeChecks} from './dev-node-checks.js';
 import {runSendChecks} from './send-checks.js';
 import {runAllocChecks} from './alloc-checks.js';
 import {runSignChecks} from './sign-checks.js';
+import {runImpersonationChecks} from './impersonation-checks.js';
 
 const cut: CodeUnderTest = {
 	name: '@webevm/devnode',
@@ -50,6 +53,14 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'sign') {
 			try {
 				results.sign = await runSignChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings: [], errors, env: captureEnv()};
+		}
+		if (ctx.params.mode === 'impersonation') {
+			try {
+				results.impersonation = await runImpersonationChecks(undefined);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

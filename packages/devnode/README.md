@@ -4,7 +4,7 @@ Dev accounts for [webevm](https://github.com/wighawag/webevm), the slim, executi
 
 webevm's core holds no keys: it answers `eth_accounts`, `eth_sendTransaction` and every other account method with a real `-32601`, on purpose. That is right for an application with its own signing client, and not what a deploy tool or a test runner expects from a local chain. This package is the layer those tools need, on top of the core rather than inside it: a node that answers `eth_accounts` with the same test accounts anvil and Hardhat use, funded at genesis as theirs are, and forwards everything else to webevm unchanged.
 
-This release covers the dev accounts, their funding, sending and signing with them (`eth_sendTransaction`, `eth_signTransaction`, `personal_sign`, `eth_sign`, `eth_signTypedData_v4`), and an alloc export for forge. Impersonation is coming in a later release.
+This release covers the dev accounts, their funding, sending and signing with them (`eth_sendTransaction`, `eth_signTransaction`, `personal_sign`, `eth_sign`, `eth_signTypedData_v4`), impersonation (opt-in, on a `senderMode: 'trusted'` node), and an alloc export for forge.
 
 ## Install
 
@@ -37,6 +37,7 @@ await client.getBalance({address: deployer}); // 10000000000000000000000n
 | `balance` | 10,000 ETH | each dev account's genesis balance, in wei (a `bigint`) |
 | `fund` | `true` | `false` funds no dev account (`fundAccounts` and `initialBalances` still apply) |
 | `fundAccounts` | none | extra addresses to fund at genesis, address to wei (anvil's `--fund-accounts`) |
+| `impersonation` | `false` | answer `hardhat_impersonateAccount` / `anvil_impersonateAccount` and send from impersonated addresses; creates the node with `senderMode: 'trusted'` (see [Impersonation](#impersonation)) |
 
 The mnemonic defaults to `test test test test test test test test test test test junk`, the path to `m/44'/60'/0'/0` (account `i` is at `m/44'/60'/0'/0/{initialIndex + i}`), `count` to 10 and `initialIndex` to 0, exactly as on anvil and Hardhat, so an index-declared account (`deployer: 0`) resolves to the same address here as there. An invalid mnemonic, private key, count or index throws, naming the option.
 
@@ -82,7 +83,7 @@ const hash = await wallet.sendTransaction({account: deployer, to, value: 1n, cha
 
 **One at a time.** Each send is filled, signed and submitted as one operation on a queue, so concurrent sends from one account get consecutive nonces.
 
-**From an account the node holds no key for**, the request is refused with `4100` (EIP-1193's "Unauthorized"), naming the remedies: configure its key in `accounts`, or impersonate it (not yet available). Nothing is sent and nothing moves.
+**From an account the node holds no key for**, the request is refused with `4100` (EIP-1193's "Unauthorized"), naming the remedies: configure its key in `accounts`, or impersonate it (with the `impersonation` option on, the message names `hardhat_impersonateAccount` for that address). Nothing is sent and nothing moves.
 
 ### The two send paths, by `senderMode`
 
@@ -110,13 +111,30 @@ const raw = await wallet.signTransaction({account: deployer, to, value: 1n, chai
 
 A signature is the 65 bytes `r ‖ s ‖ v` with `v` 27 or 28, as viem, MetaMask and geth return it, deterministic (RFC 6979) and low-`s`: the same message signs to the same bytes as viem's `privateKeyToAccount(key).signMessage` / `signTypedData`. The EIP-712 encoder is this package's own (no dependency): referenced types sorted by name in the type encoding, nested structs, fixed and dynamic arrays (nested too), `bytes` and `string` hashed, every `intN` / `uintN` / `bytesN`, `bool` and `address`. A missing `EIP712Domain` type is derived from the domain's fields, as viem and ethers derive it; a value that does not fit its type (a missing member, an integer out of range, a `bytesN` of the wrong length) is refused with `-32602` naming its path, never coerced.
 
-An address the node holds no key for is refused with `4100`, naming the `accounts` option. Nothing is ever signed for an address without its key.
+An address the node holds no key for is refused with `4100`, naming the `accounts` option. Nothing is ever signed for an address without its key, an impersonated one included.
+
+## Impersonation
+
+```ts
+const node = await createDevNode({impersonation: true, fundAccounts: {[whale]: 10n ** 21n}});
+await node.request({method: 'hardhat_impersonateAccount', params: [whale]});
+await node.request({method: 'eth_sendTransaction', params: [{from: whale, to, value: '0x1'}]});
+await node.request({method: 'hardhat_stopImpersonatingAccount', params: [whale]});
+```
+
+Off by default. With `impersonation: true`, `hardhat_impersonateAccount [address]` and `hardhat_stopImpersonatingAccount [address]`, and the same two under their `anvil_` names, add an address to (or remove it from) the impersonated set; each returns `null`, as anvil answers them, and stopping an address that is not impersonated is no error. `eth_sendTransaction` from an impersonated address is filled exactly as a dev account's is, given a FABRICATED signature (a fixed low `s` and an `r` derived from the address, so two impersonated senders sending otherwise identical transactions still get two different hashes), and sent through webevm's `evm_sendRawTransactionAs(raw, from)`: the transaction executes AS that address, its balance charged and its nonce advanced.
+
+**It needs a `senderMode: 'trusted'` node**, because that is the only kind that takes a sender it is told rather than one it recovers. `createDevNode({impersonation: true})` creates one, and refuses an explicit `senderMode: 'recover'` alongside the option; `wrapDevNode(node, {impersonation: true})` throws at once on a node that is not `'trusted'`, naming the option. While the option is off, the four methods answer a real `-32601` naming it (rocketh swallows that error, so its message is where you learn what to switch on).
+
+**No signature that is not one.** Every signing method (`eth_signTransaction`, `personal_sign`, `eth_sign`, `eth_signTypedData_v4`) refuses an impersonated address with `4100`, saying no key is held for it. A dev account that is also impersonated still signs, and sends, with its own key. `eth_accounts` never lists an impersonated address.
+
+**A dump holding impersonated transactions is NOT replayable on a `'recover'` node.** Their signatures are fabricated: a `'recover'` node recovers some unrelated address from them, or none, so `dumpState().transactions` of such a chain is not portable chain history ([ADR 0002](https://github.com/wighawag/webevm/blob/main/docs/adr/0002-trusted-sender-is-a-primitive-impersonation-is-not-our-job.md), Consequences). This is the one exception to the rule [above](#the-two-send-paths-by-sendermode): a dev account's own transactions carry real signatures and replay anywhere, on a `'trusted'` node too. `toAllocs` is unaffected, since an alloc carries state only.
 
 ## What the wrapped node is
 
 A `SlimNode`, the same interface webevm's own nodes have, so it drops in wherever one goes:
 
-- `request` answers `eth_accounts` with the dev accounts, in order, as lowercase hex (as webevm writes every address). It never lists an impersonated address. It answers `eth_sendTransaction` and the signing methods for a dev account (above). Every other method reaches the node unchanged, its result or its error included: the core's own `-32601` for a method nobody implements arrives exactly as the core raised it.
+- `request` answers `eth_accounts` with the dev accounts, in order, as lowercase hex (as webevm writes every address). It never lists an impersonated address. It answers `eth_sendTransaction` and the signing methods for a dev account, and the impersonation methods (above). Every other method reaches the node unchanged, its result or its error included: the core's own `-32601` for a method nobody implements arrives exactly as the core raised it.
 - `serveOn(port)` serves the dev node's `request`, so a consumer on another thread using `providerOverPort(port)` from `@eip-1193/over-port` sees the dev accounts too.
 - `dispose()` stops answering on the ports it served, then disposes the node.
 - Every other member (`mine`, `dumpState`, `loadState`, `onNewHead`, `getStateRoot`, `computeStateRoot`, `senderMode`, `engine`) is the node's own.

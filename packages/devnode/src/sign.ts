@@ -25,7 +25,10 @@
  *
  * - AN ADDRESS WITH NO KEY IS REFUSED WITH `4100`, the code
  *   `eth_sendTransaction` uses for the same thing (see ./send.ts), naming only
- *   the `accounts` remedy: impersonation never signs (ADR 0017).
+ *   the `accounts` remedy: impersonation never signs (ADR 0017). An
+ *   IMPERSONATED address with no key is refused with the same `4100`, saying so
+ *   (`impersonatedNoKeyMessage` in ./impersonation.ts): a dev account that is
+ *   also impersonated still signs with its key.
  * - `personal_sign` TAKES A MESSAGE THAT IS NOT HEX AS UTF-8 TEXT, as MetaMask
  *   does (dapps pass a login message as plain text), and 0x hex as the bytes it
  *   spells. So a text message that happens to be valid 0x hex is signed as
@@ -42,6 +45,7 @@ import {keccak_256} from '@noble/hashes/sha3.js';
 import {RpcError} from 'webevm';
 import type {DevAccount} from './accounts.js';
 import {hashTypedData} from './eip712.js';
+import {impersonatedNoKeyMessage, type Impersonation} from './impersonation.js';
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const HEX_DATA = /^0x([0-9a-fA-F]{2})*$/;
@@ -113,6 +117,7 @@ export interface MessageSigner {
 
 export function createMessageSigner(
 	accounts: readonly DevAccount[],
+	impersonation: Impersonation,
 ): MessageSigner {
 	const keys = new Map(accounts.map((a) => [a.address, a.privateKey]));
 
@@ -137,7 +142,13 @@ export function createMessageSigner(
 			);
 		const from = address.toLowerCase();
 		const key = keys.get(from);
-		if (!key) throw new RpcError(4100, noKeyMessage(method, from));
+		if (!key)
+			throw new RpcError(
+				4100,
+				impersonation.addresses.has(from)
+					? impersonatedNoKeyMessage(method, from)
+					: noKeyMessage(method, from),
+			);
 		return key;
 	}
 

@@ -26,14 +26,41 @@ import {
 	type DevAccountsOptions,
 	type DevFundingOptions,
 } from './accounts.js';
+import {createImpersonation, IMPERSONATION_METHODS} from './impersonation.js';
 import {createTransactionMethods} from './send.js';
 import {createMessageSigner} from './sign.js';
 
-/** What {@link wrapDevNode} takes: the accounts, and nothing that funds. */
-export type WrapDevNodeOptions = DevAccountsOptions;
+/** The impersonation switch, which both constructors take. */
+export interface ImpersonationOptions {
+	/**
+	 * Answer `hardhat_impersonateAccount` / `hardhat_stopImpersonatingAccount`
+	 * (and their `anvil_` names), and send from an impersonated address with a
+	 * fabricated signature through `evm_sendRawTransactionAs`. Default `false`,
+	 * when the four methods answer `-32601` naming this option. Needs a
+	 * `senderMode: 'trusted'` node: `createDevNode` creates one, `wrapDevNode`
+	 * refuses any other. See ./impersonation.ts.
+	 */
+	impersonation?: boolean;
+}
 
-/** What {@link createDevNode} takes: webevm's options plus the dev accounts and their funding. */
-export type DevNodeOptions = NodeOptions & DevFundingOptions;
+/** What {@link wrapDevNode} takes: the accounts and the impersonation switch, and nothing that funds. */
+export type WrapDevNodeOptions = DevAccountsOptions & ImpersonationOptions;
+
+/** What {@link createDevNode} takes: webevm's options plus the dev accounts, their funding and the impersonation switch. */
+export type DevNodeOptions = NodeOptions &
+	DevFundingOptions &
+	ImpersonationOptions;
+
+/** Why impersonation cannot run on `node`, or `undefined` when it can. */
+function impersonationRefusal(senderMode: unknown): string | undefined {
+	if (senderMode === 'trusted') return undefined;
+	return (
+		`@webevm/devnode: the \`impersonation\` option needs a node created with senderMode: 'trusted', ` +
+		`since an impersonated address's transactions carry a fabricated signature and are sent through ` +
+		`evm_sendRawTransactionAs, and it was given senderMode: '${String(senderMode)}'. ` +
+		`Create the node with senderMode: 'trusted' (createDevNode does so when the option is on), or turn the option off.`
+	);
+}
 
 /**
  * Wrap an existing node with dev accounts. FUNDS NOTHING: genesis is decided
@@ -48,7 +75,8 @@ export type DevNodeOptions = NodeOptions & DevFundingOptions;
  *   `eth_sendTransaction` from one of them (filled, signed with its key and
  *   submitted by the node's sender mode; see ./send.ts), signs for them
  *   (`eth_signTransaction`, ./send.ts; `personal_sign`, `eth_sign` and
- *   `eth_signTypedData_v4`, ./sign.ts), and
+ *   `eth_signTypedData_v4`, ./sign.ts), answers the impersonation methods
+ *   (./impersonation.ts; `-32601` naming the option while it is off), and
  *   forwards every other method to the node, its result or its error unchanged
  *   (the node's own `-32601` included: the very promise the node returned);
  * - `serveOn` serves THIS `request` on the port, so a served port answers the
@@ -57,24 +85,33 @@ export type DevNodeOptions = NodeOptions & DevFundingOptions;
  *   (whose own `dispose` closes only the ports IT served);
  * - every other member delegates.
  *
- * Throws on an invalid account config (see `deriveDevAccounts`).
+ * Throws on an invalid account config (see `deriveDevAccounts`), and at once
+ * when `impersonation` is on and the node is not `senderMode: 'trusted'`.
  */
 export function wrapDevNode(
 	node: SlimNode,
 	options: WrapDevNodeOptions = {},
 ): Required<SlimNode> {
-	return decorate(node, deriveDevAccounts(options.accounts));
+	const accounts = deriveDevAccounts(options.accounts);
+	const impersonation = options.impersonation === true;
+	if (impersonation) {
+		const refusal = impersonationRefusal(node.senderMode);
+		if (refusal) throw new Error(refusal);
+	}
+	return decorate(node, accounts, impersonation);
 }
 
 /** The decorator itself, over accounts already derived (and so validated). */
 function decorate(
 	node: SlimNode,
 	accounts: readonly DevAccount[],
+	impersonationOn: boolean,
 ): Required<SlimNode> {
 	const addresses = accounts.map((a) => a.address);
 	const servedPorts = new Set<ServedProvider>();
-	const transactions = createTransactionMethods(node, accounts);
-	const signer = createMessageSigner(accounts);
+	const impersonation = createImpersonation(impersonationOn);
+	const transactions = createTransactionMethods(node, accounts, impersonation);
+	const signer = createMessageSigner(accounts, impersonation);
 
 	async function request(args: RequestArguments): Promise<unknown> {
 		switch (args.method) {
@@ -93,6 +130,11 @@ function decorate(
 			case 'eth_signTypedData_v4':
 				return signer.signTypedDataV4(args.params);
 			default:
+				if (IMPERSONATION_METHODS.has(args.method))
+					// On the send queue, so a send issued before it sees the set as it was.
+					return transactions.inOrder(() =>
+						impersonation.request(args.method, args.params),
+					);
 				return node.request(args);
 		}
 	}
@@ -137,12 +179,28 @@ function decorate(
  * is created with webevm's `createNode`. Like every `initialBalances`, they
  * apply to a NEW genesis only: a state restored by `loadState` or `persistence`
  * keeps its own balances.
+ *
+ * With `impersonation: true` the node is created with `senderMode: 'trusted'`,
+ * which the option needs; an explicit `senderMode: 'recover'` alongside it is
+ * refused before any node is created.
  */
 export async function createDevNode(
 	options: DevNodeOptions = {},
 ): Promise<Required<SlimNode>> {
-	const {accounts, balance, fund, fundAccounts, initialBalances, ...rest} =
-		options;
+	const {
+		accounts,
+		balance,
+		fund,
+		fundAccounts,
+		initialBalances,
+		impersonation,
+		...rest
+	} = options;
+	const impersonationOn = impersonation === true;
+	if (impersonationOn && rest.senderMode !== undefined) {
+		const refusal = impersonationRefusal(rest.senderMode);
+		if (refusal) throw new Error(refusal);
+	}
 	// Derive (and so validate) the accounts and their balances BEFORE creating a
 	// node, so a bad config throws with nothing left behind to dispose.
 	const devAccounts = deriveDevAccounts(accounts);
@@ -153,6 +211,10 @@ export async function createDevNode(
 		fundAccounts,
 		initialBalances,
 	});
-	const node = await createNode({...rest, initialBalances: funded});
-	return decorate(node, devAccounts);
+	const node = await createNode({
+		...rest,
+		...(impersonationOn ? {senderMode: 'trusted' as const} : {}),
+		initialBalances: funded,
+	});
+	return decorate(node, devAccounts, impersonationOn);
 }
