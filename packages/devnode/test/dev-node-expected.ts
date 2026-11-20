@@ -111,7 +111,13 @@ export function assertDevNode(c: Record<string, any>, engineId: string) {
 	// The node's own error object: a real `RpcError`, not a copy made here.
 	expect(byMethod.webevm_noSuchMethod.isRpcError).toBe(true);
 	expect(byMethod.webevm_noSuchMethod.name).toBe('RpcError');
-	expect(byMethod.eth_sendTransaction.code).toBe(-32601);
+	// A signing method this release does not answer yet reaches the core's -32601.
+	expect(byMethod.eth_signTransaction.code).toBe(-32601);
+	// eth_sendTransaction is the layer's own now: the core's -32601 on a plain
+	// node, the layer's -32602 (no `from`) on a dev node.
+	expect(c.answered.plain.code).toBe(-32601);
+	expect(c.answered.dev.code).toBe(-32602);
+	expect(c.answered.dev.message).toContain('`from`');
 	// The last sample (a malformed address) is refused by the node, whatever
 	// shape its error has; the loop above holds the dev node to that shape.
 	const malformed = c.forwarded[c.forwarded.length - 1];

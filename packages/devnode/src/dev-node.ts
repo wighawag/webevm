@@ -26,6 +26,7 @@ import {
 	type DevAccountsOptions,
 	type DevFundingOptions,
 } from './accounts.js';
+import {createSender} from './send.js';
 
 /** What {@link wrapDevNode} takes: the accounts, and nothing that funds. */
 export type WrapDevNodeOptions = DevAccountsOptions;
@@ -43,6 +44,8 @@ export type DevNodeOptions = NodeOptions & DevFundingOptions;
  * not, fails to build here instead of reading as `undefined`):
  *
  * - `request` answers `eth_accounts` with the dev accounts, in order, and
+ *   `eth_sendTransaction` from one of them (filled, signed with its key and
+ *   submitted by the node's sender mode; see ./send.ts), and
  *   forwards every other method to the node, its result or its error unchanged
  *   (the node's own `-32601` included: the very promise the node returned);
  * - `serveOn` serves THIS `request` on the port, so a served port answers the
@@ -67,6 +70,7 @@ function decorate(
 ): Required<SlimNode> {
 	const addresses = accounts.map((a) => a.address);
 	const servedPorts = new Set<ServedProvider>();
+	const sendTransaction = createSender(node, accounts);
 
 	async function request(args: RequestArguments): Promise<unknown> {
 		switch (args.method) {
@@ -74,6 +78,8 @@ function decorate(
 				// A fresh array each time, so a caller mutating its answer cannot
 				// change the next one.
 				return [...addresses];
+			case 'eth_sendTransaction':
+				return sendTransaction(args.params);
 			default:
 				return node.request(args);
 		}
