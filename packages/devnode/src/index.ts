@@ -3,7 +3,11 @@
  * genesis. See `docs/adr/0017-dev-accounts-live-in-webevm-devnode-a-slimnode-decorator-funded-at-genesis.md`.
  */
 export {createDevNode, wrapDevNode} from './dev-node.js';
-export type {DevNodeOptions, WrapDevNodeOptions} from './dev-node.js';
+export type {
+	DevNodeOptions,
+	ImpersonationOptions,
+	WrapDevNodeOptions,
+} from './dev-node.js';
 export {toAllocs} from './allocs.js';
 export type {AllocAccount, Allocs} from './allocs.js';
 export {

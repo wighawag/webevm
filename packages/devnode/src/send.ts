@@ -42,7 +42,9 @@
  *   `UnauthorizedProviderError`. A missing or malformed `from` is `-32602`.
  *   Alternatives: `-32000` (a generic server error), or `-32602` for both, which
  *   would read as a malformed request when the request is well formed. The
- *   impersonation task extends the message, not the code.
+ *   impersonation task extends the message, not the code: it names
+ *   `hardhat_impersonateAccount` (or `anvil_impersonateAccount`) while the
+ *   `impersonation` option is on, and the option itself while it is off.
  * - A REQUEST THAT CANNOT BE SENT AS NAMED IS REFUSED WITH `-32602`, never
  *   trimmed into one that can: fields its type cannot carry (a `gasPrice` with
  *   EIP-1559 fees or with an `authorizationList`, an `accessList` on type 0, an
@@ -70,12 +72,25 @@
  *   nonce: nothing was submitted, as on anvil.
  * - Its `4100` names only the `accounts` remedy: impersonation never signs
  *   (ADR 0017).
+ *
+ * AN IMPERSONATED `from` (task `devnode-impersonation`, see
+ * ./impersonation.ts) is filled exactly as a dev account's is and given the
+ * FABRICATED signature of `fabricatedSignature` instead of a real one, then
+ * sent through `evm_sendRawTransactionAs` (the option requires a `'trusted'`
+ * node). A dev account that is also impersonated sends with its key: the key
+ * is looked up first. `eth_signTransaction` refuses an impersonated `from`
+ * with `4100`, since what it returns would be a signature that is not one.
  */
 import {Common, Hardfork, Mainnet} from '@ethereumjs/common';
 import {createTx, type TypedTxData} from '@ethereumjs/tx';
 import {bytesToHex} from '@ethereumjs/util';
 import {RpcError, type SlimNode} from 'webevm';
 import type {DevAccount} from './accounts.js';
+import type {Impersonation} from './impersonation.js';
+import {
+	fabricatedSignature,
+	impersonatedNoKeyMessage,
+} from './impersonation.js';
 import {noKeyMessage} from './sign.js';
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -223,6 +238,8 @@ export interface TransactionMethods {
 	sendTransaction(params: unknown): Promise<string>;
 	/** `eth_signTransaction`: fill and sign as `eth_sendTransaction` does; resolves to the raw signed transaction, unsent. */
 	signTransaction(params: unknown): Promise<string>;
+	/** Run `job` on the same queue, after every send and sign issued before it. */
+	inOrder<T>(job: () => T): Promise<T>;
 }
 
 type TransactionMethod = 'eth_sendTransaction' | 'eth_signTransaction';
@@ -230,11 +247,13 @@ type TransactionMethod = 'eth_sendTransaction' | 'eth_signTransaction';
 /**
  * The layer's `eth_sendTransaction` and `eth_signTransaction`: functions of the
  * request's params, which run every send and every sign on ONE queue, signing
- * with the given accounts' keys.
+ * with the given accounts' keys, or, for an address `impersonation` holds, a
+ * fabricated signature.
  */
 export function createTransactionMethods(
 	node: SlimNode,
 	accounts: readonly DevAccount[],
+	impersonation: Impersonation,
 ): TransactionMethods {
 	const keys = new Map(accounts.map((a) => [a.address, a.privateKey]));
 	let common: Promise<{common: Common; chainId: bigint}> | undefined;
@@ -282,16 +301,27 @@ export function createTransactionMethods(
 				'`from` must be the 20-byte hex address of the dev account to send from.',
 			);
 		const from = request.from.toLowerCase();
+		// The key first: a dev account that is also impersonated signs with it.
 		const privateKey = keys.get(from);
-		if (!privateKey)
-			throw new RpcError(
-				4100,
-				method === 'eth_sendTransaction'
-					? `eth_sendTransaction: ${from} is not a dev account, so @webevm/devnode holds no key to sign for it. ` +
-							`Configure its private key in the dev node's \`accounts\` option, or impersonate it ` +
-							`(impersonation is not available in this version of @webevm/devnode).`
-					: noKeyMessage(method, from),
-			);
+		if (!privateKey) {
+			const impersonated = impersonation.addresses.has(from);
+			if (method === 'eth_signTransaction')
+				throw new RpcError(
+					4100,
+					impersonated
+						? impersonatedNoKeyMessage(method, from)
+						: noKeyMessage(method, from),
+				);
+			if (!impersonated)
+				throw new RpcError(
+					4100,
+					`eth_sendTransaction: ${from} is not a dev account, so @webevm/devnode holds no key to sign for it. ` +
+						`Configure its private key in the dev node's \`accounts\` option, or impersonate it: ` +
+						(impersonation.enabled
+							? `call hardhat_impersonateAccount (or anvil_impersonateAccount) with ["${from}"] first.`
+							: `turn on the dev node's \`impersonation\` option, then call hardhat_impersonateAccount (or anvil_impersonateAccount) with ["${from}"].`),
+				);
+		}
 
 		const type = envelopeType(request);
 		const data = callData(request);
@@ -388,10 +418,20 @@ export function createTransactionMethods(
 		}
 
 		try {
+			if (privateKey) {
+				const raw = bytesToHex(
+					createTx(txData as TypedTxData, {common})
+						.sign(privateKey, false)
+						.serialize(),
+				);
+				return {raw, from};
+			}
+			// Impersonated: the fabricated signature, y-parity 0 (EIP-155's
+			// `chainId * 2 + 35` on a legacy transaction).
+			const {r, s} = fabricatedSignature(from);
+			const v = type === 0 ? chainId * 2n + 35n : 0n;
 			const raw = bytesToHex(
-				createTx(txData as TypedTxData, {common})
-					.sign(privateKey, false)
-					.serialize(),
+				createTx({...txData, v, r, s} as TypedTxData, {common}).serialize(),
 			);
 			return {raw, from};
 		} catch (e) {
@@ -424,5 +464,6 @@ export function createTransactionMethods(
 		sendTransaction: (params) => enqueue(() => send(params)),
 		signTransaction: (params) =>
 			enqueue(async () => (await build(params, 'eth_signTransaction')).raw),
+		inOrder: (job) => enqueue(async () => job()),
 	};
 }
