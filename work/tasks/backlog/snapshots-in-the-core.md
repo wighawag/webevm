@@ -9,7 +9,7 @@ covers: []
 
 `evm_snapshot` returns an id for the chain as it stands; `evm_revert(id)` restores it (state, blocks, receipts, transactions, logs and the `stateHistory` window alike) and returns `true`, or `false` for an id it does not hold. Reverting consumes that snapshot and every snapshot taken after it, as Hardhat and anvil both do. anvil's `anvil_snapshot` / `anvil_revert` are aliases.
 
-Why the core: by ADR 0016's principle (a cheat that is not account policy, under the names the other dev nodes use, belongs in the core), recorded in the Answers section of `work/specs/proposed/dev-node-package.md`. That package forwards these methods rather than implementing them, and so does any consumer of the core alone, which today has no way to roll a chain back between test cases.
+Why the core: by ADR 0016's principle (a cheat that is not account policy, under the names the other dev nodes use, belongs in the core), recorded in the Answers section of `work/specs/ready/dev-node-package.md`. That package forwards these methods rather than implementing them, and so does any consumer of the core alone, which today has no way to roll a chain back between test cases.
 
 The proposed first implementation holds a `dumpState()` per snapshot and reverts with `loadState()`: simple, correct by construction (both are the node's own, serialised entry points), and fine at dev-chain sizes. Its cost is O(state) per snapshot and is to be measured and stated; a cheaper mechanism (the `stateHistory` undo log, ADR 0013) is a later change if the measurement asks for one.
 
