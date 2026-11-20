@@ -16,6 +16,9 @@
  *                 the same battery alloc.spec.ts also runs in Node
  *   - 'impersonation': `hardhat_` / `anvil_impersonateAccount` and the sends
  *                 they enable (./impersonation-checks.ts)
+ *   - 'worker-hosting': the dev node over a worker proxy and inside a worker
+ *                 (./worker-hosting-checks.ts, driving ./dev-worker.ts at
+ *                 `params.workerUrl`)
  */
 import type {
 	CodeUnderTest,
@@ -27,6 +30,7 @@ import {runSendChecks} from './send-checks.js';
 import {runAllocChecks} from './alloc-checks.js';
 import {runSignChecks} from './sign-checks.js';
 import {runImpersonationChecks} from './impersonation-checks.js';
+import {runWorkerHostingChecks} from './worker-hosting-checks.js';
 
 const cut: CodeUnderTest = {
 	name: '@webevm/devnode',
@@ -61,6 +65,16 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'impersonation') {
 			try {
 				results.impersonation = await runImpersonationChecks(undefined);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings: [], errors, env: captureEnv()};
+		}
+		if (ctx.params.mode === 'worker-hosting') {
+			try {
+				results.workerHosting = await runWorkerHostingChecks(
+					String(ctx.params.workerUrl),
+				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

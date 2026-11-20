@@ -111,6 +111,9 @@ importers:
       '@scure/bip39':
         specifier: ^2.0.0
         version: 2.4.0
+      comlink:
+        specifier: ^4.4.2
+        version: 4.4.2
     devDependencies:
       '@playwright/test':
         specifier: ^1.60.0

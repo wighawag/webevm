@@ -4,7 +4,7 @@ Dev accounts for [webevm](https://github.com/wighawag/webevm), the slim, executi
 
 webevm's core holds no keys: it answers `eth_accounts`, `eth_sendTransaction` and every other account method with a real `-32601`, on purpose. That is right for an application with its own signing client, and not what a deploy tool or a test runner expects from a local chain. This package is the layer those tools need, on top of the core rather than inside it: a node that answers `eth_accounts` with the same test accounts anvil and Hardhat use, funded at genesis as theirs are, and forwards everything else to webevm unchanged.
 
-This release covers the dev accounts, their funding, sending and signing with them (`eth_sendTransaction`, `eth_signTransaction`, `personal_sign`, `eth_sign`, `eth_signTypedData_v4`), impersonation (opt-in, on a `senderMode: 'trusted'` node), and an alloc export for forge.
+This release covers the dev accounts, their funding, sending and signing with them (`eth_sendTransaction`, `eth_signTransaction`, `personal_sign`, `eth_sign`, `eth_signTypedData_v4`), impersonation (opt-in, on a `senderMode: 'trusted'` node), an alloc export for forge, and running in a Web Worker (keys on the main thread, or inside the worker).
 
 ## Install
 
@@ -67,6 +67,58 @@ const node = wrapDevNode(
 ```
 
 `wrapDevNode(node, {accounts})` FUNDS NOTHING, because genesis is decided when a node is created. To fund a node created elsewhere (a `createWorkerNode()` whose keys stay on the main thread, say), pass `devAccountBalances(options)` as its `initialBalances`: it returns exactly the balances `createDevNode` would fund for the same options.
+
+## In a Web Worker
+
+webevm runs a node in a Worker with `createWorkerNode()` (`webevm/worker-client`) and `exposeNode()` (`webevm/worker-host`); both need `comlink`, an optional peer of webevm and of this package. The dev layer goes on either side of that boundary.
+
+### Keys on the main thread
+
+```ts
+import {createWorkerNode} from 'webevm/worker-client';
+import {wrapDevNode, devAccountBalances} from '@webevm/devnode';
+
+const accounts = {mnemonic: myMnemonic};
+const worker = new Worker(new URL('webevm/worker-entry', import.meta.url), {type: 'module'});
+const node = wrapDevNode(
+	await createWorkerNode({worker, initialBalances: devAccountBalances({accounts})}),
+	{accounts},
+);
+```
+
+The EVM runs in the worker; the accounts, sends and signatures are answered on the main thread, which holds the keys. `wrapDevNode` funds nothing, so the genesis balances go to `createWorkerNode()` as its `initialBalances`, exactly the ones `createDevNode` would fund. Any worker module works, a plain `webevm/worker-entry` or your own `exposeNode({createEngine})` one. For impersonation, create the worker node with `senderMode: 'trusted'` as well.
+
+### Keys in the worker
+
+```ts
+// dev-worker.ts
+import {exposeDevNode} from '@webevm/devnode/worker-host';
+import {createRevmEngine} from 'webevm/revm'; // optional: omit createEngine for the default engine
+import wasm from 'revm-wasm/revm.wasm';
+
+exposeDevNode({
+	createEngine: () => createRevmEngine({wasm}),
+	accounts: {mnemonic: myMnemonic},
+	impersonation: true,
+});
+```
+
+```ts
+// main thread: webevm's own client, unchanged
+import {createWorkerNode} from 'webevm/worker-client';
+
+const worker = new Worker(new URL('./dev-worker.ts', import.meta.url), {type: 'module'});
+const node = await createWorkerNode({worker, chainId: 31337});
+await node.request({method: 'eth_accounts'}); // the dev accounts, answered in the worker
+```
+
+`exposeDevNode(options)` takes `createEngine` (as `webevm/worker-host`'s `exposeNode` does) and the dev options `accounts`, `balance`, `fund`, `fundAccounts` and `impersonation`. It hands webevm's worker host a node factory, so each `createWorkerNode()` creates the node in the worker with `createDevNode({...mainThreadOptions, ...devOptions})`: the genesis is funded there, and the keys and the mnemonic are written in the worker module and never cross to the main thread. Every other option (`chainId`, `miningConfig`, `senderMode`, `initialBalances`, ...) is the main thread's, passed to `createWorkerNode()` as usual, and its `initialBalances` still win over the dev funding for the same address (which is why `initialBalances` is not an `exposeDevNode` option: the worker funds extra addresses with `fundAccounts`). The node crosses the boundary through webevm's own proxy, so every `SlimNode` member works, and an error the layer raises (`4100` for an address it holds no key for, say) reaches the main thread as a real `RpcError` with its `code`.
+
+A bad mnemonic, key, count or `balance` does not throw from `exposeDevNode` (a throw while the worker module evaluates would leave `createWorkerNode()` pending forever): it is logged in the worker at once, and `createWorkerNode()` rejects with the same message. A bad `createEngine` is reported the same way, by webevm. Call `exposeDevNode` once per worker and await nothing at the module's top level before it, as with `exposeNode`. `createDevNodeWorkerApi(options)` returns the same api without exposing it, to compose into a larger comlink api of your own.
+
+**Which one serves `serveOn`'s ports.** A layer on the MAIN thread over a worker proxy serves its ports from the main thread (it must, to answer the account methods there), so a consumer holding the other end of a port reaches the worker through the main thread: that shape gives up `serveOn`'s worker-to-worker path. The layer inside the worker keeps it: the port is transferred to the worker, which answers the account methods itself.
+
+This needs a `webevm` with `exposeNode`'s node factory (`>=0.10.0`, the peer minimum). On an older webevm the factory would be ignored silently, and the worker would run a plain node with no dev accounts.
 
 ## Sending from a dev account
 
