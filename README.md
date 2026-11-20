@@ -219,6 +219,8 @@ method-not-found (`-32601`) — it never fakes a result.
   `eth_sendTransaction`, `eth_accounts`, `eth_sign`, `eth_signTransaction`,
   `personal_*`, `wallet_addEthereumChain`, `wallet_switchEthereumChain`.
 
+Need dev accounts anyway (a deploy tool or a test runner expecting anvil's or Hardhat's)? [`@webevm/devnode`](https://github.com/wighawag/webevm/tree/main/packages/devnode#readme) is a separate package that wraps a webevm node: `eth_accounts` answers with the standard test accounts, funded at genesis, and every other method reaches the node unchanged. The core stays execution-only.
+
 ### Not implemented yet (would `-32601` today)
 
 - JSON-RPC batch requests (array payloads); filter polling (`eth_newFilter` etc.);

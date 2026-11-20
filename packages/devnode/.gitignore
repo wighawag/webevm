@@ -1,0 +1,7 @@
+dist/
+node_modules/
+test-results/
+playwright-report/
+
+# copied from repo root by the `prepack` script
+LICENSE
