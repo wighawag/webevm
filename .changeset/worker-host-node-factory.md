@@ -1,5 +1,0 @@
----
-'webevm': minor
----
-
-**`webevm/worker-host` takes an optional node factory: `exposeNode({createNode})`** (and `createNodeWorkerApi({createNode})`, which it wraps). When given, the worker calls `createNode(options)` with the options the main thread passed to `createWorkerNode()` (the engine from `createEngine` already merged in when that is set) instead of webevm's own `createNode`, and the node it resolves to is what the main thread drives, through the same single proxy, every `SlimNode` member included. Typed `(options: NodeOptions) => Promise<SlimNode>`, exported as `NodeFactory`. This is what lets a layer that must create the node itself (funding dev accounts at genesis, as `@webevm/devnode` will) run inside a worker without shipping a second worker host. A factory that throws or rejects makes `createWorkerNode()` reject with its message; one that is not a function is refused like a bad `createEngine`, as a value: the worker logs it at once and `createWorkerNode()` rejects with the same text, never a hang. **Nothing changes without the option.**
