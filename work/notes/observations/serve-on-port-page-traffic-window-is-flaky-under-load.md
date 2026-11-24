@@ -1,0 +1,3 @@
+# serve-on-port's page-traffic window is flaky under load
+
+2026-11-24. `packages/webevm/test/serve-on-port.spec.ts:67` (`expect(fromWorker.pageMessagesWhileServing).toBe(0)`) failed once on Chromium in the fresh-gate run of task `console-log-on-the-revm-engine` with 2 page messages counted, bouncing that task although it touches no serve-on-port code. The same test then passed 5/5 alone (`--repeat-each=5`) and in the full gate. Likely a late comlink reply from `handOff` / `startLoop` landing inside the `PAGE_FREE_MS` window in `test/helpers/serve-on-port.ts` when the machine is busy; settling the traffic counters before snapshotting `before` would probably make it deterministic.
