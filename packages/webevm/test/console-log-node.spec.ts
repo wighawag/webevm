@@ -229,6 +229,7 @@ test('console.log is delivered from transactions and eth_call, and observed only
 	expect(c.worker.threw).toMatch(
 		/^webevm\/worker-client: onConsoleLog .*`consoleLog` option/,
 	);
+	expect(c.worker.threw).toContain('exposeNode({createConsoleLog:');
 	expect(c.worker.returnedSomething).toBe(false);
 
 	// ---- 9. estimation: silent unless asked, then the first execution only ----

@@ -48,6 +48,9 @@
 import {expose, proxy} from 'comlink';
 import {createNode} from './node.js';
 import type {Engine, NodeOptions, SlimNode} from './types.js';
+// TYPE-ONLY, so a worker module that does not import `webevm/console-log`
+// ships none of it (ADR 0018).
+import type {ConsoleLog} from './console-log.js';
 import {sendingRpcErrors} from './worker-rpc-error.js';
 
 /**
@@ -62,6 +65,17 @@ import {sendingRpcErrors} from './worker-rpc-error.js';
  * the second time this worker was asked for a node.
  */
 export type EngineSupplier = () => Engine | Promise<Engine>;
+
+/**
+ * Builds the `consoleLog` option for ONE node, on the thread that will run it:
+ * `() => consoleLog()`, with `consoleLog` from `webevm/console-log`.
+ *
+ * A FUNCTION, shaped like {@link EngineSupplier} and for the same structural
+ * reason: the option is a function-bearing object (its `decode` and its sink),
+ * so it is built on the thread that uses it, once per node, and its sink (the
+ * default print, or a custom `onLog`) runs HERE, on the worker.
+ */
+export type ConsoleLogSupplier = () => ConsoleLog;
 
 /** What the WORKER thread decides. Everything else is the main thread's. */
 export interface WorkerHostOptions {
@@ -105,7 +119,45 @@ export interface WorkerHostOptions {
 	 * {@link createEngine} is, as a value (both signals).
 	 */
 	createNode?: NodeFactory;
+	/**
+	 * Enable Solidity `console.log` for this node, on THIS thread (ADR 0018,
+	 * "In a Worker, console logging is enabled in the worker module"):
+	 *
+	 *   exposeNode({createConsoleLog: () => consoleLog()});
+	 *
+	 * Called ONCE PER `createNode()`, and its result merged into the main
+	 * thread's options as `consoleLog`, exactly as {@link createEngine}'s engine
+	 * is merged (so a {@link createNode} factory receives it in its options). The
+	 * default sink therefore prints in the WORKER's console, and an `onLog` runs
+	 * on the worker; the main thread receives entries through `onConsoleLog`,
+	 * which crosses comlink as `onNewHead` does. `createWorkerNode({consoleLog})`
+	 * cannot do this (the option cannot be cloned) and is refused.
+	 *
+	 * One that is not a function (`createConsoleLog: consoleLog()`, the object
+	 * itself) is refused the way a bad {@link createEngine} is, as a value (both
+	 * signals); one that throws makes `createWorkerNode()` reject with its
+	 * message.
+	 */
+	createConsoleLog?: ConsoleLogSupplier;
 }
+
+/**
+ * What the worker's `createNode()` hands across: the one {@link nodeProxy}, plus
+ * ONE plain value the client reads at creation, as it reads `computeStateRoot`,
+ * `senderMode` and `engine`.
+ *
+ * DECISION: `consoleLogEnabled` IS A VALUE ON THE PROXY, NOT A `SlimNode`
+ * MEMBER. The client needs it to refuse `onConsoleLog` SYNCHRONOUSLY on a node
+ * without console logging (a remote call is fire-and-forget, so the node's own
+ * refusal would become an unhandled rejection instead of a throw). A public
+ * `SlimNode` member was the alternative and was rejected: on a main-thread node
+ * the answer is already in its options, so the member would exist only for this
+ * boundary. It reports the node ACTUALLY BUILT, probed once on this thread (see
+ * {@link probeConsoleLog}), not whether `createConsoleLog` was passed, because a
+ * {@link WorkerHostOptions.createNode} factory may build a logging node by
+ * itself.
+ */
+export type WorkerHostedNode = SlimNode & {readonly consoleLogEnabled: boolean};
 
 /**
  * Creates the {@link SlimNode} for ONE `createNode()` call on the worker thread,
@@ -135,8 +187,8 @@ export type NodeFactory = (options: NodeOptions) => Promise<SlimNode>;
  * `-32004`, and a method that raises none today costs nothing to cover.
  * `onNewHead` is the exception because it is synchronous and throws nothing.
  * `onConsoleLog` is forwarded the same way; it does throw (on a node created
- * without `consoleLog`), but the client never calls it remotely until
- * `console-log-in-a-worker`, so that throw has no remote caller yet.
+ * without `consoleLog`), but the client refuses that case on its own thread,
+ * from {@link WorkerHostedNode.consoleLogEnabled}, before calling it remotely.
  */
 function nodeProxy(node: SlimNode): SlimNode {
 	const forwarded: Required<SlimNode> = {
@@ -151,7 +203,8 @@ function nodeProxy(node: SlimNode): SlimNode {
 		// newHeads over comlink: the callback arrives as a comlink proxy, and the
 		// unsubscribe going back must be marked as one too, or it clones as `{}`.
 		onNewHead: (cb) => proxy(node.onNewHead(cb)),
-		// console.log entries, forwarded exactly as newHeads are.
+		// console.log entries, forwarded exactly as newHeads are: the callback runs
+		// on the main thread, the sink stays on this one.
 		onConsoleLog: (cb) => proxy(node.onConsoleLog(cb)),
 		// The port arrives TRANSFERRED (the client marks it so), which makes it this
 		// thread's: the node serves it right here, and a consumer holding the other
@@ -171,7 +224,7 @@ function nodeProxy(node: SlimNode): SlimNode {
  * of your own; this is the same object `worker-entry` exposes.
  */
 export function createNodeWorkerApi(hostOptions: WorkerHostOptions = {}) {
-	const {createEngine, createNode: nodeFactory} = hostOptions;
+	const {createEngine, createNode: nodeFactory, createConsoleLog} = hostOptions;
 	// THE REFUSAL IS A VALUE. Passing the ENGINE (or the promise of one) where its
 	// FACTORY belongs is the one plausible mistake at this seam, and it is refused
 	// with a real message rather than left to become a `TypeError` from inside
@@ -181,11 +234,12 @@ export function createNodeWorkerApi(hostOptions: WorkerHostOptions = {}) {
 	// on the main thread never settles at all. Recorded here, said out loud here,
 	// and thrown where a caller can catch it.
 	//
-	// Both options are checked, and a module that gets BOTH wrong hears about both
-	// at once rather than fixing one only to meet the other.
+	// Every option is checked, and a module that gets several wrong hears about
+	// all of them at once rather than fixing one only to meet the next.
 	const refusals = [
 		engineSupplierRefusal(createEngine),
 		nodeFactoryRefusal(nodeFactory),
+		consoleLogSupplierRefusal(createConsoleLog),
 	].filter((r): r is string => r !== undefined);
 	const refusal = refusals.length > 0 ? refusals.join('\n') : undefined;
 	// THE EARLY SIGNAL, on the thread the mistake was written on and at the moment
@@ -199,16 +253,20 @@ export function createNodeWorkerApi(hostOptions: WorkerHostOptions = {}) {
 			// error back as a rejection, so the main thread's `await createWorkerNode()`
 			// fails with this text instead of hanging.
 			if (refusal !== undefined) throw new Error(refusal);
-			// The main thread's options pass through UNCHANGED; the engine, and only
-			// the engine, is this thread's. Then whichever factory makes the node:
-			// the consumer's when given (a throw or rejection from it crosses to the
-			// main thread as `createWorkerNode()`'s rejection), webevm's own
-			// otherwise.
-			const nodeOptions = createEngine
-				? {...options, engine: await createEngine()}
-				: options;
+			// The main thread's options pass through UNCHANGED; the engine and the
+			// console-log option, and only those, are this thread's. Then whichever
+			// factory makes the node: the consumer's when given (a throw or rejection
+			// from it, or from either supplier, crosses to the main thread as
+			// `createWorkerNode()`'s rejection), webevm's own otherwise.
+			const nodeOptions: NodeOptions = {...options};
+			if (createConsoleLog) nodeOptions.consoleLog = createConsoleLog();
+			if (createEngine) nodeOptions.engine = await createEngine();
 			const node = await (nodeFactory ?? createNode)(nodeOptions);
-			return proxy(nodeProxy(node));
+			const hosted: WorkerHostedNode = {
+				...nodeProxy(node),
+				consoleLogEnabled: probeConsoleLog(node),
+			};
+			return proxy(hosted);
 		},
 	};
 }
@@ -271,6 +329,61 @@ function nodeFactoryRefusal(nodeFactory: unknown): string | undefined {
 	return (
 		`webevm/worker-host: \`createNode\` must be a FUNCTION that creates the node from the options it is given (received ${describe(nodeFactory)}). ` +
 		"Pass `{createNode: (options) => myCreateNode(options)}`, or omit it for webevm's own createNode. " +
+		why
+	);
+}
+
+/**
+ * Whether `node` delivers console.log entries, asked of the node itself: its
+ * `onConsoleLog` throws on a node created without `consoleLog` (./node.ts), and
+ * a probe subscription that did not throw is released at once. Asking the node
+ * rather than the host options is what makes a {@link WorkerHostOptions.createNode}
+ * factory that enables console logging by itself report `true`.
+ */
+function probeConsoleLog(node: SlimNode): boolean {
+	let unsubscribe: unknown;
+	try {
+		unsubscribe = node.onConsoleLog(() => {});
+	} catch {
+		return false;
+	}
+	if (typeof unsubscribe === 'function') unsubscribe();
+	return true;
+}
+
+/**
+ * The message for a `createConsoleLog` that is not a function, or `undefined`
+ * when it is one (`undefined` itself being no console logging, not a mistake).
+ *
+ * The likely mistake is `createConsoleLog: consoleLog()`, the OBJECT the option
+ * takes, one arrow away from right, so that case shows both forms. The THENABLE
+ * case names itself as it does for `createEngine`.
+ */
+function consoleLogSupplierRefusal(
+	createConsoleLog: unknown,
+): string | undefined {
+	if (
+		createConsoleLog === undefined ||
+		typeof createConsoleLog === 'function'
+	) {
+		return undefined;
+	}
+	const why =
+		"It is called ONCE PER createNode(), on this thread, and its result becomes that node's `consoleLog` option: the sink runs here, and the main thread subscribes with node.onConsoleLog(cb).";
+	const write =
+		"Write `{createConsoleLog: () => consoleLog()}` (import {consoleLog} from 'webevm/console-log'), not `{createConsoleLog: consoleLog()}`. ";
+	if (
+		typeof (createConsoleLog as {then?: unknown} | null)?.then === 'function'
+	) {
+		return (
+			'webevm/worker-host: `createConsoleLog` must be a FUNCTION that returns the consoleLog option on this thread, and it was given a PROMISE: a function was CALLED here instead of being passed. ' +
+			write +
+			why
+		);
+	}
+	return (
+		`webevm/worker-host: \`createConsoleLog\` must be a FUNCTION that returns the consoleLog option on this thread, not the option itself (received ${describe(createConsoleLog)}). ` +
+		write +
 		why
 	);
 }

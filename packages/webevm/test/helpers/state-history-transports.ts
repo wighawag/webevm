@@ -120,8 +120,13 @@ export async function runStateHistoryTransportChecks(
 ): Promise<StateHistoryTransportsReport> {
 	// No engine: the default engine is the only one that crosses `createWorkerNode`
 	// (a worker that builds its own passes it through `exposeNode`, which forwards
-	// the same options object to the same `createNode`).
-	const {engine: _none, ...options} = await chainNodeOptions(undefined, {
+	// the same options object to the same `createNode`). No `consoleLog` either,
+	// for the same reason (`WorkerNodeOptions` types both `never`).
+	const {
+		engine: _none,
+		consoleLog: _noConsoleLog,
+		...options
+	} = await chainNodeOptions(undefined, {
 		stateHistory: {blocks: WINDOW},
 	});
 

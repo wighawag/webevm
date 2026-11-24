@@ -62,8 +62,8 @@ function decorate(inner: SlimNode, received: FactoryProbe['received']) {
 		loadState: (state) => (note('loadState'), inner.loadState(state)),
 		getStateRoot: () => (note('getStateRoot'), inner.getStateRoot()),
 		onNewHead: (cb) => (note('onNewHead'), inner.onNewHead(cb)),
-		// Delegated, never noted: the client refuses `onConsoleLog` without calling
-		// the worker until `console-log-in-a-worker`.
+		// Delegated, never noted: the worker host probes it once per node (to
+		// report whether the node logs), which is not a call the main thread made.
 		onConsoleLog: (cb) => inner.onConsoleLog(cb),
 		serveOn: (port) => (note('serveOn'), inner.serveOn(port)),
 		dispose: () => (note('dispose'), inner.dispose()),

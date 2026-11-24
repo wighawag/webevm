@@ -39,7 +39,21 @@ export interface WorkerNodeOptions extends NodeOptions {
 	 * supported way to run a non-default engine inside a Worker.
 	 */
 	engine?: never;
+	/**
+	 * NOT AVAILABLE ON THIS PATH either, for the same reason as `engine`, and
+	 * typed `never` the same way (and refused at runtime). Console logging in a
+	 * Worker is enabled in the WORKER MODULE, with
+	 * `exposeNode({createConsoleLog: () => consoleLog()})` from
+	 * `webevm/worker-host`; this thread then subscribes with `onConsoleLog`
+	 * (ADR 0018).
+	 */
+	consoleLog?: never;
 }
+
+/** What `onConsoleLog` throws on a worker node created without console logging. */
+const CONSOLE_LOG_NOT_ENABLED =
+	'webevm/worker-client: onConsoleLog needs console logging, and this worker node was created without it (it has no `consoleLog` option), so no entry would ever arrive. ' +
+	"Enable it in the worker module: exposeNode({createConsoleLog: () => consoleLog()}) from webevm/worker-host (import {consoleLog} from 'webevm/console-log'), then subscribe here.";
 
 export async function createWorkerNode(
 	opts: WorkerNodeOptions,
@@ -76,6 +90,17 @@ export async function createWorkerNode(
 				'Or run the engine on the main thread with createNode().',
 		);
 	}
+	// THE SAME REFUSAL FOR `consoleLog`, and for the same reason: its `decode`
+	// and its sink are functions, so it cannot be cloned into the Worker, and the
+	// sink would run on the wrong thread even if it could. Thrown here, before
+	// anything is posted.
+	if ((nodeOptions as NodeOptions).consoleLog !== undefined) {
+		throw new Error(
+			"webevm/worker-client: `consoleLog` is not supported by createWorkerNode(). The node's options are structured-cloned into the Worker and the consoleLog option is a function-bearing object (its decode and its sink), so it cannot be cloned across the thread boundary (comlink would report only a DataCloneError). " +
+				"Enable console logging INSIDE the Worker instead: write your own worker module that calls exposeNode({createConsoleLog: () => consoleLog()}) from webevm/worker-host (import {consoleLog} from 'webevm/console-log'), then subscribe on this thread with node.onConsoleLog(cb). " +
+				'Or run the node on the main thread with createNode({consoleLog: consoleLog()}).',
+		);
+	}
 	const api = wrap<NodeWorkerApi>(worker);
 	const remote = await api.createNode(nodeOptions);
 	// computeStateRoot/senderMode/engine are plain values on the node; over comlink
@@ -88,6 +113,9 @@ export async function createWorkerNode(
 	const computeStateRoot = await remote.computeStateRoot;
 	const senderMode = await remote.senderMode;
 	const engineInfo = await remote.engine;
+	// Whether the node the worker BUILT logs (the host probes the node itself),
+	// read once like the three above so `onConsoleLog` can refuse synchronously.
+	const consoleLogEnabled = await remote.consoleLogEnabled;
 
 	// EVERY ASYNC METHOD IS WRAPPED IN `receivingRpcErrors`, the other half of the
 	// host proxy's `sendingRpcErrors`: an `RpcError` the node raises reaches the
@@ -115,16 +143,24 @@ export async function createWorkerNode(
 				void unsub?.();
 			};
 		},
-		// NOT FORWARDED YET, and refused SYNCHRONOUSLY, here: a worker-hosted node
-		// cannot be created with `consoleLog` until `console-log-in-a-worker`, so the
-		// remote would refuse too, but `onNewHead`'s fire-and-forget remote call
-		// above would turn that refusal into an unhandled rejection rather than a
-		// throw the caller can see.
-		onConsoleLog() {
-			throw new Error(
-				'webevm/worker-client: onConsoleLog needs console logging, and a node created with createWorkerNode() cannot be created with the `consoleLog` option yet, so no entry would ever arrive. ' +
-					"Run the node on the main thread with createNode({consoleLog: consoleLog()}) (import {consoleLog} from 'webevm/console-log') to receive console.log entries.",
-			);
+		// Subscribed across comlink exactly as `onNewHead` is. Refused SYNCHRONOUSLY,
+		// here, on a node without console logging: the remote would refuse too, but
+		// the fire-and-forget remote call would turn that refusal into an unhandled
+		// rejection rather than a throw the caller can see.
+		onConsoleLog(cb) {
+			if (!consoleLogEnabled) throw new Error(CONSOLE_LOG_NOT_ENABLED);
+			let unsub: (() => void) | undefined;
+			let unsubscribed = false;
+			void remote.onConsoleLog(proxy(cb)).then((u) => {
+				unsub = u;
+				// An unsubscribe called before the subscription came back still
+				// takes effect, once it has something to call.
+				if (unsubscribed) void u();
+			});
+			return () => {
+				unsubscribed = true;
+				void unsub?.();
+			};
 		},
 		serveOn: receivingRpcErrors(async (port: MessagePort) => {
 			// TRANSFERRED, never cloned: a MessagePort cannot be cloned at all, and the

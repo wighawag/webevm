@@ -137,6 +137,22 @@ exposeNode({
 
 It is called once per node with the options your main thread passed to `createWorkerNode()`, the engine from `createEngine` already merged in when that is set, and must resolve to a `SlimNode` (typed `(options: NodeOptions) => Promise<SlimNode>`). The node it returns is the one your main thread drives, through the same proxy as always, every member included. Omit it and the worker calls webevm's own `createNode`, exactly as before. A factory that throws or rejects makes `createWorkerNode()` reject with its message; one that is not a function is refused like a bad `createEngine`, logged by the worker AND rejecting `createWorkerNode()` with the same text.
 
+**Console logging: `createConsoleLog`.** Solidity [`console.log`](#solidity-consolelog) in a Worker is enabled in the worker module, not through `createWorkerNode()` (its `consoleLog` option is typed `never` and refused at runtime, since the option is a function-bearing object that cannot be cloned into the Worker):
+
+```ts
+// my-worker.ts
+import {exposeNode} from 'webevm/worker-host';
+import {consoleLog} from 'webevm/console-log';
+
+exposeNode({createConsoleLog: () => consoleLog()});
+
+// main thread
+const node = await createWorkerNode({worker, chainId: 31337});
+const unsubscribe = node.onConsoleLog((entry) => show(entry.message));
+```
+
+Like `createEngine`, it is a function, called once per node, and its result becomes that node's `consoleLog` option on the worker thread (so a `createNode` factory receives it in its options, as it receives the engine). The default sink therefore prints in the WORKER's console, and a custom `consoleLog({onLog})` runs on the worker; the main thread receives the same entries, field for field, through `onConsoleLog`, which crosses the boundary as `onNewHead` does. A factory that enables console logging by itself works too. On a worker node without console logging, `onConsoleLog` throws synchronously, naming `createConsoleLog`. `createConsoleLog: consoleLog()` (the object, no arrow) is refused like a bad `createEngine`, logged by the worker AND rejecting `createWorkerNode()` with the same text; one that throws makes `createWorkerNode()` reject with its message.
+
 **Do not `await` at the top level of a worker module before `exposeNode()`.** A
 worker module that awaits something slower than a microtask (fetching wasm,
 opening a database, `await createRevmEngine(...)`) before it calls `exposeNode()`
@@ -802,7 +818,7 @@ What a consumer can rely on:
 
 **Engines.** Console logging needs an engine that records call frames. The default `@ethereumjs/evm` engine does. `webevm/revm` does not yet: `createNode({engine: await createRevmEngine({wasm}), consoleLog: consoleLog()})` is refused at construction, saying it needs revm-wasm outcome format 5 (revm-wasm 0.6.0) and naming the format its artifact has, until webevm moves onto revm-wasm 0.6.0 (task `console-log-on-the-revm-engine`).
 
-**Workers.** A node from `createWorkerNode()` cannot enable console logging yet, and its `onConsoleLog` throws synchronously; run the node on the main thread with `createNode` for now (task `console-log-in-a-worker`).
+**Workers.** In a Worker, console logging is enabled in the worker module with `exposeNode({createConsoleLog: () => consoleLog()})`, and the main thread subscribes with `onConsoleLog` on the `createWorkerNode()` node; `createWorkerNode({consoleLog})` is refused. See [A Worker that builds its own engine](#a-worker-that-builds-its-own-engine).
 
 ## On comprehensive EVM test fixtures (`ethereum/tests`)
 

@@ -21,7 +21,9 @@
  *      request throw
  *   7. not chain state: no log in a dump, none replayed by `loadState` or a
  *      persistence reload
- *   8. a `createWorkerNode()` node's `onConsoleLog` throws synchronously
+ *   8. a `createWorkerNode()` node without console logging (`worker-entry`)
+ *      refuses `onConsoleLog` synchronously; one WITH it is in
+ *      ./worker-console-log.ts
  * The re-entrancy case is in ./concurrency.ts, beside `onNewHead`'s. See
  * docs/adr/0018-console-log-is-observed-never-answered.md.
  */
@@ -617,7 +619,7 @@ async function reload() {
 	};
 }
 
-/** 8. `onConsoleLog` on a worker-hosted node. */
+/** 8. `onConsoleLog` on a worker-hosted node without console logging. */
 async function worker(workerUrl: string) {
 	const node = await createWorkerNode({
 		worker: new Worker(workerUrl, {type: 'module'}),

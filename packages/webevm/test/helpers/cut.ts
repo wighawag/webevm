@@ -100,6 +100,10 @@
  *                            the main thread's options with the engine merged in,
  *                            and a non-function or rejecting factory rejects the
  *                            main thread instead of hanging it
+ *   - 'worker-console-log' : a worker module that enables console logging through
+ *                            `exposeNode({createConsoleLog})`: entries reach a
+ *                            main-thread `onConsoleLog`, the sinks run on the
+ *                            worker, and a misuse rejects instead of hanging
  *   - 'serve-on-port'      : a node SERVES its EIP-1193 `request` on a handed
  *                            `MessagePort` (`node.serveOn(port)`), worker-hosted
  *                            and main-thread alike, answering a consumer in
@@ -193,6 +197,7 @@ import {runTrustedSenderChecks} from './trusted-sender.js';
 import {workerRoundtrip} from './worker-roundtrip.js';
 import {driveMisusedEngineWorker, reportEarlySignal} from './engine-misuse.js';
 import {runNodeFactoryChecks} from './node-factory.js';
+import {runWorkerConsoleLogChecks} from './worker-console-log.js';
 import {
 	serveOnPortFromWorker,
 	serveOnPortFromMainThread,
@@ -577,6 +582,19 @@ const cut: CodeUnderTest = {
 				Object.assign(
 					results,
 					await runNodeFactoryChecks(String(ctx.params.workerUrl)),
+				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// worker-console-log: console logging enabled in the worker module through
+		// `exposeNode({createConsoleLog})`, observed from this thread (ADR 0018).
+		if (ctx.params.mode === 'worker-console-log') {
+			try {
+				results.workerConsoleLog = await runWorkerConsoleLogChecks(
+					String(ctx.params.workerUrl),
 				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
