@@ -44,6 +44,13 @@ test('revm engine: call recording is not declared yet, and the refusal says why'
 	// ...before binding it: the same engine still connects without the
 	// requirement (it refuses a SECOND node, so a bound engine would not)
 	expect(c.notRequired).toBe('CONNECTED');
+	// createNode({engine: <webevm/revm>, consoleLog}) is refused at
+	// construction, naming the engine, the capability and the engine's reason
+	expect(c.node).toMatch(
+		/^REFUSED: webevm: the engine 'revm-wasm' does not record calls/,
+	);
+	expect(c.node).toContain('recordsCalls');
+	expect(c.node).toContain(reason);
 
 	await h.dispose();
 });

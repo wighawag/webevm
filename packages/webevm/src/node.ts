@@ -115,8 +115,28 @@ import {
 	type SerializedTx,
 	type SerializedHistoryBlock,
 } from './types.js';
+// TYPE-ONLY: the console-log decoder is injected (NodeOptions.consoleLog), and
+// the core graph imports none of `webevm/console-log`'s code (ADR 0018).
+import type {
+	ConsoleLog,
+	ConsoleLogEntry,
+	ConsoleLogTransactionEntry,
+} from './console-log.js';
 
 const ZERO_HASH = '0x' + '00'.repeat(32);
+
+/**
+ * THE CONSOLE ADDRESS, `0x000000000000000000636F6e736F6c652e6c6f67` (the ASCII
+ * of `console.log`), which Hardhat's `console.sol` and forge-std's
+ * `console.sol` / `console2.sol` all `STATICCALL`. A console-logging node asks
+ * the engine to record calls to it (`recordCallsTo`); see ADR 0018.
+ */
+const CONSOLE_ADDRESS = '0x000000000000000000636f6e736f6c652e6c6f67';
+
+/** What `onConsoleLog` throws on a node created without `consoleLog`. */
+const CONSOLE_LOG_NOT_ENABLED =
+	'webevm: onConsoleLog needs console logging, and this node was created without the `consoleLog` option, so no entry would ever arrive. ' +
+	"Create the node with it: import {consoleLog} from 'webevm/console-log'; createNode({consoleLog: consoleLog()}).";
 const ZERO_ADDRESS = '0x' + '00'.repeat(20);
 /** EIP-7702: the code an authority holds once delegated is this, then 20 bytes. */
 const DELEGATION_PREFIX = Uint8Array.of(0xef, 0x01, 0x00);
@@ -594,6 +614,59 @@ function validateHardfork(options: NodeOptions): NodeHardfork {
 	);
 }
 
+/**
+ * `consoleLog` IS THE OBJECT `consoleLog()` RETURNS, or absent. Refused at
+ * construction otherwise (the function itself, forgetting to call it, or a
+ * `true` written as if it were a flag, which ADR 0018 rejected), because the node
+ * would otherwise come up and fail at the first logging transaction, inside the
+ * delivery that is never allowed to fail anything, and so log nothing.
+ */
+function validateConsoleLog(options: NodeOptions): ConsoleLog | undefined {
+	const value = options.consoleLog as unknown;
+	if (value === undefined) return undefined;
+	const o = value as Partial<ConsoleLog> | null;
+	if (
+		typeof o === 'object' &&
+		o !== null &&
+		typeof o.decode === 'function' &&
+		typeof o.sink === 'function'
+	)
+		return o as ConsoleLog;
+	throw new Error(
+		`webevm: consoleLog must be the object consoleLog() returns (import {consoleLog} from 'webevm/console-log'; createNode({consoleLog: consoleLog()})), ` +
+			`with a decode(input) and a sink(entry) function; got ${typeof value === 'function' ? 'a function (call it: consoleLog())' : describeOption(value)}.`,
+	);
+}
+
+/**
+ * Call ONE console-log consumer (the sink or a subscriber) the way ADR 0018
+ * requires: synchronously, NEVER awaited, and never able to fail what logged.
+ * A throw, and a returned promise that rejects, are each reported once through
+ * `console.error`; nothing propagates.
+ */
+function callConsoleConsumer(
+	what: string,
+	fn: (entry: ConsoleLogEntry) => unknown,
+	entry: ConsoleLogEntry,
+): void {
+	const report = (err: unknown) =>
+		console.error(
+			`webevm: a console.log ${what} failed; the entry was still delivered to the others and execution is unaffected.`,
+			err,
+		);
+	try {
+		const out = fn(entry);
+		if (
+			out !== null &&
+			(typeof out === 'object' || typeof out === 'function') &&
+			typeof (out as PromiseLike<unknown>).then === 'function'
+		)
+			(out as PromiseLike<unknown>).then(undefined, report);
+	} catch (err) {
+		report(err);
+	}
+}
+
 function describeOption(value: unknown): string {
 	try {
 		const s = JSON.stringify(value);
@@ -628,6 +701,13 @@ export async function createNodeWithInternals(
 	 */
 	const computeStateRoot = options.computeStateRoot === true;
 	const hardfork = validateHardfork(options);
+	/** The injected console-log object, or `undefined`: console logging is off. */
+	const consoleLog = validateConsoleLog(options);
+	/** `recordCallsTo` for every request a console-logging node records, else unset. */
+	const consoleAddress =
+		consoleLog === undefined
+			? undefined
+			: createAddressFromString(CONSOLE_ADDRESS);
 
 	const common = new Common({
 		chain: {...Mainnet, chainId, name: 'webevm'},
@@ -888,16 +968,23 @@ export async function createNodeWithInternals(
 	// answered this node's reads and executed its transactions alike.
 	const engine: Engine =
 		options.engine ?? createEthereumjsEngine({vm, stateManager: sm});
-	await connectEngine(engine, {
-		stateManager: sm,
-		common,
-		// Block hashes for BLOCKHASH, read LIVE (no block exists yet at this point)
-		// and SYNCHRONOUSLY, because an engine answers BLOCKHASH mid-opcode.
-		getBlockHash: (blockNumber: bigint) => {
-			const sb = blockStore.get(Number(blockNumber));
-			return sb ? hexToBytes(sb.header.hash as `0x${string}`) : undefined;
+	await connectEngine(
+		engine,
+		{
+			stateManager: sm,
+			common,
+			// Block hashes for BLOCKHASH, read LIVE (no block exists yet at this point)
+			// and SYNCHRONOUSLY, because an engine answers BLOCKHASH mid-opcode.
+			getBlockHash: (blockNumber: bigint) => {
+				const sb = blockStore.get(Number(blockNumber));
+				return sb ? hexToBytes(sb.header.hash as `0x${string}`) : undefined;
+			},
 		},
-	});
+		// CONSOLE LOGGING NEEDS AN ENGINE THAT DECLARES IT RECORDS CALLS, refused
+		// here otherwise: an engine that never heard of `recordCallsTo` would ignore
+		// it and the node would log nothing, silently (ADR 0018).
+		{recordCalls: consoleLog !== undefined},
+	);
 
 	// THE ENGINE'S secp256k1, IF IT BROUGHT ONE. Read ONCE, after `connect`, so a
 	// transaction never pays a property lookup and — more to the point — so which
@@ -1011,6 +1098,61 @@ export async function createNodeWithInternals(
 
 	// newHeads subscribers.
 	const headSubs = new Set<(h: {number: number; hash: string}) => void>();
+	// console.log subscribers (`onConsoleLog`), only ever filled on a node created
+	// with `consoleLog`.
+	const consoleSubs = new Set<(entry: ConsoleLogEntry) => void>();
+
+	/**
+	 * THE SECOND GUARD behind the declared capability (ADR 0018): the node asked
+	 * for `recordedCalls` and an engine that declared `recordsCalls: true` returned
+	 * none. Thrown rather than delivering nothing, which would look exactly like a
+	 * contract that logs nothing.
+	 */
+	function recordedCallsOf(
+		result: {recordedCalls?: readonly Uint8Array[]},
+		what: string,
+	): readonly Uint8Array[] {
+		if (result.recordedCalls !== undefined) return result.recordedCalls;
+		throw new Error(
+			`webevm: the engine '${engine.id}' declares that it records calls (\`recordsCalls: true\`), but its result for ${what} carries no \`recordedCalls\` although the node set \`recordCallsTo\` for console logging. ` +
+				`The node does not deliver nothing in its place, since that would look like a contract that logs nothing: the engine is broken.`,
+		);
+	}
+
+	/**
+	 * DELIVER console-log entries, once the engine has returned (never from inside
+	 * the EVM): each recorded call decoded by the injected object, the undecodable
+	 * ones skipped, then the sink and every subscriber called for it in order,
+	 * synchronously and never awaited (see {@link callConsoleConsumer}). A
+	 * subscriber that issues a node request has it queue behind the current one
+	 * (ADR 0012), as an `onNewHead` callback's does.
+	 */
+	function deliverConsoleLog(
+		calls: readonly Uint8Array[],
+		complete: (decoded: {
+			args: ConsoleLogEntry['args'];
+			message: string;
+		}) => ConsoleLogEntry,
+	): void {
+		if (consoleLog === undefined) return;
+		for (const input of calls) {
+			let decoded;
+			try {
+				decoded = consoleLog.decode(input);
+			} catch {
+				// The decoder never throws by contract; a broken one is malformed input
+				// from the node's point of view, and is skipped like it.
+				decoded = undefined;
+			}
+			if (decoded === undefined) continue;
+			const entry = complete({args: decoded.args, message: decoded.message});
+			callConsoleConsumer('sink', consoleLog.sink, entry);
+			// A copy, so a subscriber that unsubscribes (or subscribes) while being
+			// called changes the next entry's audience, not this one's.
+			for (const cb of [...consoleSubs])
+				callConsoleConsumer('onConsoleLog subscriber', cb, entry);
+		}
+	}
 	// Ports `serveOn` is serving, so `dispose` can stop them all.
 	const servedPorts = new Set<ServedProvider>();
 
@@ -1253,6 +1395,14 @@ export async function createNodeWithInternals(
 		const blockLogs: SerializedLog[] = [];
 		let cumulativeGasUsed = 0n;
 		let txIndex = 0;
+		// THIS BLOCK'S CONSOLE CALLS, buffered per transaction and delivered only once
+		// the block is stored (below), so an entry never names a block that a batch
+		// failing on a later transaction never stored. Empty without `consoleLog`.
+		const consoleCalls: {
+			calls: readonly Uint8Array[];
+			txHash: string;
+			txIndex: number;
+		}[] = [];
 
 		for (const {tx, raw, sender} of txs) {
 			// THE MINING PATH GOES THROUGH THE ENGINE. What comes back is the neutral
@@ -1272,9 +1422,22 @@ export async function createNodeWithInternals(
 			// transaction when it throws: no receipt is built, no log is recorded, and
 			// the block below is never stored.
 			await refuseIfSenderCannotSend(tx, sender);
-			const res = await engine.transact({tx, sender, block});
+			const res = await engine.transact({
+				tx,
+				sender,
+				block,
+				...(consoleAddress === undefined
+					? {}
+					: {recordCallsTo: consoleAddress}),
+			});
 			cumulativeGasUsed += res.gasUsed;
 			const h = txHashOf(tx);
+			if (consoleAddress !== undefined)
+				consoleCalls.push({
+					calls: recordedCallsOf(res, `transaction ${h}`),
+					txHash: h,
+					txIndex,
+				});
 			const from = sender.toString();
 			const to = (tx as any).to ? (tx as any).to.toString() : null;
 			const created = res.createdAddress ? hex(res.createdAddress) : null;
@@ -1357,6 +1520,21 @@ export async function createNodeWithInternals(
 		if (changeSets) headBlockChangeSet = changeSets.takeChangeSet();
 		if (stateHistoryBlocks !== undefined && headBlockChangeSet !== undefined)
 			sealBlock(blockNumber, headBlockChangeSet, stateHistoryBlocks);
+		// console.log entries: the block is stored, so they may name it; in
+		// transaction order, and BEFORE the newHeads emit, so a subscriber reacting
+		// to the head has already seen what the block logged (ADR 0018).
+		for (const t of consoleCalls)
+			deliverConsoleLog(
+				t.calls,
+				(d): ConsoleLogTransactionEntry => ({
+					...d,
+					source: 'transaction',
+					txHash: t.txHash as `0x${string}`,
+					blockNumber,
+					blockHash: blockHash as `0x${string}`,
+					txIndex: t.txIndex,
+				}),
+			);
 		// emit newHeads
 		for (const cb of headSubs) cb({number: blockNumber, hash: blockHash});
 
@@ -2537,6 +2715,9 @@ export async function createNodeWithInternals(
 		params: any,
 		block: Block,
 		budget?: bigint,
+		// Set by `eth_call` alone on a console-logging node; the estimation search
+		// never sets it, so `eth_estimateGas` and `eth_fillTransaction` print nothing.
+		recordCallsTo?: Address,
 	): Promise<ReadCallResult> {
 		const from = params.from
 			? createAddressFromString(params.from)
@@ -2587,6 +2768,7 @@ export async function createNodeWithInternals(
 			value,
 			gasLimit,
 			block,
+			...(recordCallsTo === undefined ? {} : {recordCallsTo}),
 		});
 	}
 
@@ -3062,10 +3244,17 @@ export async function createNodeWithInternals(
 				const r = await pureRead(() =>
 					withStateEntries(entries, () =>
 						withAuthorizations(params[0] ?? {}, 'eth_call', () =>
-							evmCall(params[0] ?? {}, block),
+							evmCall(params[0] ?? {}, block, undefined, consoleAddress),
 						),
 					),
 				);
+				// console.log entries BEFORE the result is returned or the revert thrown,
+				// so a reverting `eth_call` still delivers what it logged (ADR 0018).
+				if (consoleAddress !== undefined)
+					deliverConsoleLog(recordedCallsOf(r, 'eth_call'), (d) => ({
+						...d,
+						source: 'eth_call',
+					}));
 				if (r.error)
 					throw new RpcError(3, 'execution reverted', hex(r.returnValue));
 				return hex(r.returnValue);
@@ -4150,6 +4339,16 @@ export async function createNodeWithInternals(
 			headSubs.add(cb);
 			return () => headSubs.delete(cb);
 		},
+		// Shaped like `onNewHead`, and not serialised for the same reason: it touches
+		// no state. Refused on a node without `consoleLog`, where a subscriber would
+		// never be called and a contract that logs would look like one that does not.
+		onConsoleLog(cb) {
+			if (consoleLog === undefined) throw new Error(CONSOLE_LOG_NOT_ENABLED);
+			consoleSubs.add(cb);
+			return () => {
+				consoleSubs.delete(cb);
+			};
+		},
 		// SERVE `request` ON A HANDED PORT, via `@eip-1193/over-port`, so a consumer
 		// on another thread uses this node through `providerOverPort(otherEnd)`.
 		//
@@ -4176,6 +4375,7 @@ export async function createNodeWithInternals(
 		async dispose() {
 			if (intervalTimer) clearInterval(intervalTimer);
 			headSubs.clear();
+			consoleSubs.clear();
 			// A disposed node stops answering on every port it was serving, so a
 			// consumer is not left talking to a node its owner has let go of.
 			for (const server of servedPorts) server.close();

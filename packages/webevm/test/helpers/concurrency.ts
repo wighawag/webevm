@@ -93,6 +93,12 @@ import {countingEngines, type EngineFactory} from './conformance.js';
 // copied into it: see that module for why a copy would drift unnoticed.
 import {BOUNDARY_TICKS, MIN_OVERLAPPING} from './scan-constants.js';
 import {privateKeyToAccount} from 'viem/accounts';
+import {encodeFunctionData} from 'viem';
+import {consoleLog} from '../../src/console-log.js';
+import {
+	consoleLogProbeAbi,
+	consoleLogProbeBytecode,
+} from './console-log-probe.js';
 
 const CHAIN_ID = 31337;
 const GENESIS_BALANCE = 10n ** 24n;
@@ -272,6 +278,7 @@ interface Harness {
 		to: string | null,
 		data: string,
 		value?: bigint,
+		gas?: bigint,
 	): Promise<string>;
 	/** `contractAddress` off a deployment's receipt — never a derived address. */
 	deploy(account: typeof senderA, initCode: string): Promise<string>;
@@ -302,6 +309,7 @@ async function harness(
 		to: string | null,
 		data: string,
 		value = 0n,
+		gas = 500_000n,
 	): Promise<string> {
 		const nonce = nonces.get(account.address) ?? 0;
 		nonces.set(account.address, nonce + 1);
@@ -311,7 +319,7 @@ async function harness(
 			...(to ? {to: to as `0x${string}`} : {}),
 			data: data as `0x${string}`,
 			value,
-			gas: 500_000n,
+			gas,
 			maxFeePerGas: MAX_FEE,
 			maxPriorityFeePerGas: MAX_PRIORITY_FEE,
 			type: 'eip1559',
@@ -944,6 +952,73 @@ async function reentrancyChecks(
 			const out = await readFromCallback;
 			off();
 			return `${out} order=${order.join(',')}`;
+		} finally {
+			await h.node.dispose();
+		}
+	});
+
+	// AN `onConsoleLog` SUBSCRIBER THAT CALLS BACK INTO THE NODE, the console-log
+	// twin of the case above (ADR 0018): entries are delivered from inside the
+	// request that logged, WHILE THE CHAIN IS HELD, and never awaited, so a
+	// request the callback issues QUEUES and resolves after the one that logged.
+	// Once for a mined transaction (the probe's constructor logs) and once for an
+	// `eth_call` (its `peek` view logs). The order is the assertion, as above.
+	//
+	// ON THE DEFAULT ENGINE ONLY, until `console-log-on-the-revm-engine`: a
+	// console-logging node refuses an engine that does not declare `recordsCalls`,
+	// which `webevm/revm` does not yet, so on it this reports that instead.
+	await check('onConsoleLog-calls-back', async () => {
+		if (makeEngine) return 'not on this engine: it does not record calls yet';
+		const h = await harness(makeEngine, {
+			consoleLog: consoleLog({onLog: () => {}}),
+		});
+		try {
+			const order: string[] = [];
+			const reads: Promise<string>[] = [];
+			const off = h.node.onConsoleLog((entry) => {
+				reads.push(
+					h.node.request({method: 'eth_blockNumber', params: []}).then((n) => {
+						order.push(`${entry.source}:callbackRead`);
+						return `${entry.source} readBack=${Number(n as string)}`;
+					}),
+				);
+			});
+			// The probe's code deposit alone is over the harness's default gas.
+			const raw = await h.sign(
+				senderA,
+				null,
+				consoleLogProbeBytecode,
+				0n,
+				2_000_000n,
+			);
+			const hash = await h.node
+				.request({method: 'eth_sendRawTransaction', params: [raw]})
+				.then((x) => (order.push('transaction'), x));
+			await reads[0];
+			const receipt = (await h.node.request({
+				method: 'eth_getTransactionReceipt',
+				params: [hash],
+			})) as {contractAddress: `0x${string}`};
+			const probe = receipt.contractAddress;
+			await h.node
+				.request({
+					method: 'eth_call',
+					params: [
+						{
+							to: probe,
+							data: encodeFunctionData({
+								abi: consoleLogProbeAbi,
+								functionName: 'peek',
+								args: [senderA.address],
+							}),
+						},
+						'latest',
+					],
+				})
+				.then(() => order.push('call'));
+			const out = await Promise.all(reads);
+			off();
+			return `${out.join(' ')} order=${order.join(',')}`;
 		} finally {
 			await h.node.dispose();
 		}

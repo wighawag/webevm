@@ -14,6 +14,10 @@ import type {Block} from '@ethereumjs/block';
 import type {TypedTransaction} from '@ethereumjs/tx';
 import type {StateManagerInterface} from '@ethereumjs/common';
 import type {Common} from '@ethereumjs/common';
+// TYPE-ONLY as well: the decoder, the selector table and the formatter behind
+// these types live in the `webevm/console-log` subpath, which the core graph
+// never imports at runtime (ADR 0018).
+import type {ConsoleLog, ConsoleLogEntry} from './console-log.js';
 
 /** Minimal EIP-1193 request args. */
 export interface RequestArguments {
@@ -747,6 +751,32 @@ export interface NodeOptions {
 	 * See `docs/adr/0013-bounded-state-history-is-an-undo-log-over-the-flat-state.md`.
 	 */
 	stateHistory?: StateHistoryOptions;
+	/**
+	 * SOLIDITY `console.log`, OPT-IN: the object `consoleLog()` returns, from
+	 * `webevm/console-log` (`import {consoleLog} from 'webevm/console-log'`).
+	 * With it, every call a mined transaction or an `eth_call` makes to the
+	 * console address `0x000000000000000000636F6e736F6c652e6c6f67` (Hardhat's
+	 * `console.sol`, forge-std's `console.sol` / `console2.sol`) is decoded and
+	 * delivered, as a structured entry, to the object's sink (by default printed
+	 * through `console.log`, prefixed) and to every {@link SlimNode.onConsoleLog}
+	 * subscriber.
+	 *
+	 * OBSERVED, NEVER ANSWERED: execution is not changed in any way, so receipts,
+	 * gas, return data and the state root are identical with and without it.
+	 * `eth_estimateGas` and `eth_fillTransaction` deliver nothing. Entries are
+	 * delivered after the engine returns: a mined transaction's once its block is
+	 * stored (in transaction order, before the `onNewHead` emit), a read's before
+	 * its result is returned or its revert thrown. The sink and the subscribers
+	 * are never awaited, and what they throw or reject with is reported through
+	 * `console.error` and changes nothing. Nothing is persisted: `dumpState`
+	 * carries no log and `loadState` replays none.
+	 *
+	 * It needs an engine that records calls ({@link Engine.recordsCalls}); one
+	 * that does not (today `webevm/revm`) is refused at construction. Absent, the
+	 * node behaves exactly as without the feature and pays nothing. See
+	 * `docs/adr/0018-console-log-is-observed-never-answered.md`.
+	 */
+	consoleLog?: ConsoleLog;
 }
 
 /** See {@link NodeOptions.stateHistory}. */
@@ -785,6 +815,18 @@ export interface SlimNode {
 	loadState(state: SerializedState): Promise<void>;
 	/** Subscribe to newHeads locally (used by eth_subscribe and consumers). */
 	onNewHead(cb: (head: {number: number; hash: string}) => void): () => void;
+	/**
+	 * Subscribe to Solidity `console.log` entries ({@link NodeOptions.consoleLog}),
+	 * whatever the sink does with them; returns the unsubscribe. The callback is
+	 * called synchronously and never awaited, and a throw or a rejected promise
+	 * from it is reported through `console.error` and changes nothing. It may
+	 * issue node requests: they queue behind the request that logged (ADR 0012).
+	 * `dispose()` drops every subscriber.
+	 *
+	 * THROWS on a node created without the `consoleLog` option, since it would
+	 * otherwise never be called and look like a contract that logs nothing.
+	 */
+	onConsoleLog(cb: (entry: ConsoleLogEntry) => void): () => void;
 	/**
 	 * Current canonical state root. With `computeStateRoot: true` this is the REAL
 	 * Merkle-Patricia root of the current state, `evm_set*` cheats since the last

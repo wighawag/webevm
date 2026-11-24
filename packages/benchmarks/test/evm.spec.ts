@@ -107,7 +107,20 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-EIGHT TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-NINE TIMES SINCE. Most recent first:
+ *
+ * 453.2 -> 455.4 KB raw / 136.8 -> 137.5 KB gzip, by
+ * `console-log-delivered-from-transactions-and-eth-call`: `createNode`'s
+ * `consoleLog` option wired through (ADR 0018). The 2.2 KB is the node's half
+ * of Solidity `console.log`: `recordCallsTo` set on every mined transaction
+ * and `eth_call`, the per-block buffer delivered before the `onNewHead` emit,
+ * `onConsoleLog`, the never-awaited, never-failing call of the sink and the
+ * subscribers, and the text of its three refusals (a `consoleLog` option that
+ * is not the object `consoleLog()` returns, `onConsoleLog` on a node without
+ * it, and an engine that declared `recordsCalls` and returned no
+ * `recordedCalls`). The decoder, the selector table and the formatter are
+ * NOT in it: `webevm/console-log` is injected and imported by type only, which
+ * the metafile check below states directly. Still zero bytes of `revm-wasm`.
  *
  * 451.7 -> 453.2 KB raw / 136.3 -> 136.8 KB gzip, by
  * `the-engine-seam-records-calls-to-an-address`: the default engine records
@@ -496,7 +509,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 453.2, gzipKB: 136.8};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 455.4, gzipKB: 137.5};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).
@@ -715,6 +728,15 @@ test('bundle size per backend (raw + gzip)', async () => {
 	expect(
 		revmInputs,
 		"`revm-wasm` reached the default entry point's module graph; it belongs to the `webevm/revm` subpath only",
+	).toEqual([]);
+	// ...and neither is `webevm/console-log`'s code: the core takes the object
+	// `consoleLog()` returns and imports the subpath by TYPE only (ADR 0018).
+	const consoleLogInputs = defaultEntryInputs.filter((p) =>
+		/console-log(-decoder)?\.(js|ts)$/.test(p),
+	);
+	expect(
+		consoleLogInputs,
+		"`webevm/console-log` reached the default entry point's module graph; the core imports it by type only",
 	).toEqual([]);
 	expect(defaultEntryInputs.length).toBeGreaterThan(0);
 	console.log(

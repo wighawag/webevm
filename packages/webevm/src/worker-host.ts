@@ -134,6 +134,9 @@ export type NodeFactory = (options: NodeOptions) => Promise<SlimNode>;
  * transfer handler). All of them, not only `request`: `getStateRoot` raises
  * `-32004`, and a method that raises none today costs nothing to cover.
  * `onNewHead` is the exception because it is synchronous and throws nothing.
+ * `onConsoleLog` is forwarded the same way; it does throw (on a node created
+ * without `consoleLog`), but the client never calls it remotely until
+ * `console-log-in-a-worker`, so that throw has no remote caller yet.
  */
 function nodeProxy(node: SlimNode): SlimNode {
 	const forwarded: Required<SlimNode> = {
@@ -148,6 +151,8 @@ function nodeProxy(node: SlimNode): SlimNode {
 		// newHeads over comlink: the callback arrives as a comlink proxy, and the
 		// unsubscribe going back must be marked as one too, or it clones as `{}`.
 		onNewHead: (cb) => proxy(node.onNewHead(cb)),
+		// console.log entries, forwarded exactly as newHeads are.
+		onConsoleLog: (cb) => proxy(node.onConsoleLog(cb)),
 		// The port arrives TRANSFERRED (the client marks it so), which makes it this
 		// thread's: the node serves it right here, and a consumer holding the other
 		// end talks to this worker directly. The handle going back carries a

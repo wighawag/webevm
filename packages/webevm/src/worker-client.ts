@@ -115,6 +115,17 @@ export async function createWorkerNode(
 				void unsub?.();
 			};
 		},
+		// NOT FORWARDED YET, and refused SYNCHRONOUSLY, here: a worker-hosted node
+		// cannot be created with `consoleLog` until `console-log-in-a-worker`, so the
+		// remote would refuse too, but `onNewHead`'s fire-and-forget remote call
+		// above would turn that refusal into an unhandled rejection rather than a
+		// throw the caller can see.
+		onConsoleLog() {
+			throw new Error(
+				'webevm/worker-client: onConsoleLog needs console logging, and a node created with createWorkerNode() cannot be created with the `consoleLog` option yet, so no entry would ever arrive. ' +
+					"Run the node on the main thread with createNode({consoleLog: consoleLog()}) (import {consoleLog} from 'webevm/console-log') to receive console.log entries.",
+			);
+		},
 		serveOn: receivingRpcErrors(async (port: MessagePort) => {
 			// TRANSFERRED, never cloned: a MessagePort cannot be cloned at all, and the
 			// point is that the port now belongs to the node's worker, so a consumer

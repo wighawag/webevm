@@ -768,6 +768,42 @@ A snapshot holds the node's own `dumpState()` and a revert loads it back, so the
 
 Each snapshot held keeps its dump in memory until it is consumed. With `computeStateRoot`, a revert rebuilds the derived trie from the restored state, which is what dominates; a node that needs fast reverts over a large state should leave it off. Snapshots are not persisted, and a `loadState` leaves them held.
 
+## Solidity `console.log`
+
+Contracts that log through Hardhat's `hardhat/console.sol` or forge-std's `console.sol` / `console2.sol` print, as they do under Hardhat, anvil and `forge test`, once you opt in:
+
+```ts
+import {createNode} from 'webevm';
+import {consoleLog} from 'webevm/console-log';
+
+const node = await createNode({consoleLog: consoleLog()});
+// every console.log call now prints: [webevm console.log] <message>
+
+// ...or route the entries yourself instead of printing them:
+const quiet = await createNode({consoleLog: consoleLog({onLog: (e) => show(e.message)})});
+
+// ...and, whatever the sink does, subscribe to structured entries:
+const off = node.onConsoleLog((entry) => {
+	entry.message; // 'work 5 5', formatted as Hardhat prints it
+	entry.args; // ['work', 5n, 5n]: integers as bigint, addresses checksummed
+	entry.source; // 'transaction' or 'eth_call'
+	// a 'transaction' entry also has txHash, blockNumber, blockHash, txIndex
+});
+```
+
+What a consumer can rely on:
+
+- **Observed, never answered.** The node watches the calls to the console address `0x000000000000000000636F6e736F6c652e6c6f67` and leaves execution alone, so receipts, gas, return data and the state root are identical with console logging on and off, and `eth_estimateGas` returns the same number. (tevm answers the address with a zero-gas precompile instead, which makes the first call cost 100 gas rather than the 2,600 a real chain charges.) See [ADR 0018](docs/adr/0018-console-log-is-observed-never-answered.md).
+- **Which executions print.** Every mined transaction (automine, `mine()`, `evm_mine`, interval mining), with `source: 'transaction'`, and every `eth_call`, with `source: 'eth_call'`. A call made inside a sub-call that reverts, or in a transaction or `eth_call` that reverts as a whole, still prints. `eth_estimateGas` and `eth_fillTransaction` print nothing (viem estimates before nearly every send, and the estimate is a search that re-executes the request many times).
+- **When.** After the engine returns, never from inside the EVM. A mined transaction's entries are delivered once its block is stored, in transaction order, before the `onNewHead` emit; an `eth_call`'s before its result is returned or its revert is thrown.
+- **Never in the way.** The sink and the subscribers are called synchronously and never awaited. A throw or a rejected promise from one is reported once through `console.error` and changes nothing. A subscriber may issue node requests: they queue behind the request that logged ([ADR 0012](docs/adr/0012-one-request-at-a-time-the-node-serialises-its-whole-public-surface.md)). Calldata that does not decode (an unknown selector, a truncated payload) is skipped, not thrown.
+- **Not chain state.** `dumpState` carries no log, and `loadState` or a persistence reload replays none.
+- **Off by default and free when off.** The decoder, the selector table and the formatter live in the `webevm/console-log` subpath; the default entry imports none of them. On a node created without `consoleLog`, `onConsoleLog` throws, naming the option.
+
+**Engines.** Console logging needs an engine that records call frames. The default `@ethereumjs/evm` engine does. `webevm/revm` does not yet: `createNode({engine: await createRevmEngine({wasm}), consoleLog: consoleLog()})` is refused at construction, saying it needs revm-wasm outcome format 5 (revm-wasm 0.6.0) and naming the format its artifact has, until webevm moves onto revm-wasm 0.6.0 (task `console-log-on-the-revm-engine`).
+
+**Workers.** A node from `createWorkerNode()` cannot enable console logging yet, and its `onConsoleLog` throws synchronously; run the node on the main thread with `createNode` for now (task `console-log-in-a-worker`).
+
 ## On comprehensive EVM test fixtures (`ethereum/tests`)
 
 `GeneralStateTests` / `execution-spec-tests` verify a tx by comparing the

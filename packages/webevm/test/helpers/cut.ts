@@ -22,6 +22,10 @@
  *   - 'console-log'        : `webevm/console-log` with no node: the selector
  *                            table, the decoder, the formatter and the sink,
  *                            over vectors the spec encodes
+ *   - 'console-log-node'   : `createNode({consoleLog})` delivers console calls
+ *                            from mined transactions and `eth_call` to the sink
+ *                            and to `onConsoleLog`, changing nothing about
+ *                            execution, through the public surface
  *   - 'rpc-block'          : the RPC block and the EVM describe the SAME block
  *                            (miner / mixHash / logsBloom), on both sides of a
  *                            dumpState/loadState round trip, plus an old dump
@@ -149,6 +153,10 @@ import {runStorageOverlayChecks} from './storage-overlay.js';
 import {runEngineSeamChecks} from './engine-seam.js';
 import {runEngineCallRecordingChecks} from './engine-call-recording.js';
 import {runConsoleLogChecks, type ConsoleLogParams} from './console-log.js';
+import {
+	runConsoleLogNodeChecks,
+	type ConsoleLogNodeParams,
+} from './console-log-node.js';
 import {runRpcBlockChecks} from './rpc-block.js';
 import {runEstimateGasChecks} from './estimate-gas.js';
 import {runBlockPinnedStateChecks} from './block-pinned-state.js';
@@ -260,6 +268,19 @@ const cut: CodeUnderTest = {
 			try {
 				results.consoleLog = await runConsoleLogChecks(
 					ctx.params as unknown as ConsoleLogParams,
+				);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// console-log-node: console calls delivered by the node itself, from mined
+		// transactions and `eth_call` (ADR 0018).
+		if (ctx.params.mode === 'console-log-node') {
+			try {
+				results.consoleLogNode = await runConsoleLogNodeChecks(
+					ctx.params as unknown as ConsoleLogNodeParams,
 				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));

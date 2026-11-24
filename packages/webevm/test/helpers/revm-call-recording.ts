@@ -4,11 +4,13 @@
  * (`console-log-on-the-revm-engine`), it does NOT declare `recordsCalls`, and it
  * says why, from the artifact it loaded, so a console-logging node's refusal
  * names what is missing. Driven at the seam: `connectEngine` directly, with
- * recording required, then without.
+ * recording required, then without; and through `createNode({consoleLog})`.
  */
 import {Common, Hardfork, Mainnet} from '@ethereumjs/common';
 import {createRevmEngine} from '../../src/revm.js';
 import {connectEngine} from '../../src/engine.js';
+import {createNode} from '../../src/node.js';
+import {consoleLog} from '../../src/console-log.js';
 import {OverlayStorageStateManager} from '../../src/state-manager.js';
 import type {EngineContext} from '../../src/types.js';
 
@@ -43,7 +45,16 @@ export async function runRevmCallRecordingChecks(wasm: Uint8Array) {
 	// to one node and refuses a second, so a refusal that had bound it would
 	// show up here).
 	const notRequired = await outcomeOf(connectEngine(engine, context()));
+	// ...and through the public surface: a console-logging node on this engine
+	// is refused AT CONSTRUCTION (ADR 0018), with the same words.
+	const node = await outcomeOf(
+		createNode({
+			engine: await createRevmEngine({wasm}),
+			consoleLog: consoleLog(),
+		}),
+	);
 	return {
+		node,
 		engineId: engine.id,
 		declared: declared === undefined ? 'ABSENT' : declared,
 		required,

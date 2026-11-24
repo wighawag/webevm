@@ -145,6 +145,7 @@ function decorate(
 		dumpState: () => node.dumpState(),
 		loadState: (state) => node.loadState(state),
 		onNewHead: (cb) => node.onNewHead(cb),
+		onConsoleLog: (cb) => node.onConsoleLog(cb),
 		getStateRoot: () => node.getStateRoot(),
 		computeStateRoot: node.computeStateRoot,
 		senderMode: node.senderMode,

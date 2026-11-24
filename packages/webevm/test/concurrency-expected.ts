@@ -137,6 +137,7 @@ export function assertConcurrencyReport(c: ConcurrencyReport, expect: Expect) {
 		'interval-mining-under-load',
 		'loadState-during-tx',
 		'mine-during-submit',
+		'onConsoleLog-calls-back',
 		'onNewHead-calls-back',
 		'persistence-hook',
 		'rejection-does-not-poison-the-queue',
@@ -178,6 +179,16 @@ export function assertConcurrencyReport(c: ConcurrencyReport, expect: Expect) {
 	// emit loop, so `readBack=2` alone would prove only that nothing deadlocked.
 	expect(c.reentrancy.completed['onNewHead-calls-back']).toBe(
 		'head=2 readBack=2 order=transaction,callbackRead',
+	);
+	// The same for an `onConsoleLog` subscriber (ADR 0018), from a mined
+	// transaction and from an `eth_call`: each callback's request resolved after
+	// the request that logged. On the default engine only until
+	// `console-log-on-the-revm-engine`, since a console-logging node refuses an
+	// engine that does not declare `recordsCalls`.
+	expect(c.reentrancy.completed['onConsoleLog-calls-back']).toBe(
+		c.engineId === '@ethereumjs/evm'
+			? 'transaction readBack=1 eth_call readBack=1 order=transaction,transaction:callbackRead,call,eth_call:callbackRead'
+			: 'not on this engine: it does not record calls yet',
 	);
 	expect(c.reentrancy.completed['persistence-hook']).toBe('saves=2 counter=1');
 	// EVERY ONE OF FOUR POLLS DURING A SLOW SAVE IS ANSWERED. This is the check
