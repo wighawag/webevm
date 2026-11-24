@@ -15,6 +15,10 @@
  *   - 'engine-seam'        : the read path runs on an ENGINE — default
  *                            @ethereumjs/evm, injected engine serves all three
  *                            read-path callers, transactions stay on the VM
+ *   - 'engine-call-recording': the seam's call recording (`recordCallsTo` /
+ *                            `recordedCalls`) on the default engine, driven at
+ *                            the seam, and `connectEngine` enforcing the
+ *                            declared `recordsCalls` capability
  *   - 'rpc-block'          : the RPC block and the EVM describe the SAME block
  *                            (miner / mixHash / logsBloom), on both sides of a
  *                            dumpState/loadState round trip, plus an old dump
@@ -140,6 +144,7 @@ import {captureEnv} from 'playwright-browser-harness/contract';
 import {slimNodeHonestyChecks} from './slim-node-checks.js';
 import {runStorageOverlayChecks} from './storage-overlay.js';
 import {runEngineSeamChecks} from './engine-seam.js';
+import {runEngineCallRecordingChecks} from './engine-call-recording.js';
 import {runRpcBlockChecks} from './rpc-block.js';
 import {runEstimateGasChecks} from './estimate-gas.js';
 import {runBlockPinnedStateChecks} from './block-pinned-state.js';
@@ -227,6 +232,18 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'engine-seam') {
 			try {
 				results.engineSeam = await runEngineSeamChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// engine-call-recording: the engine OBSERVES call frames into an address
+		// (ADR 0018), and `connectEngine` refuses an engine that does not declare it
+		// when recording is required.
+		if (ctx.params.mode === 'engine-call-recording') {
+			try {
+				results.engineCallRecording = await runEngineCallRecordingChecks();
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

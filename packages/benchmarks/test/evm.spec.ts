@@ -107,7 +107,18 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-SEVEN TIMES SINCE. Most recent first:
+ * RE-PINNED TWENTY-EIGHT TIMES SINCE. Most recent first:
+ *
+ * 451.7 -> 453.2 KB raw / 136.3 -> 136.8 KB gzip, by
+ * `the-engine-seam-records-calls-to-an-address`: the default engine records
+ * the call frames into the address a request names in `recordCallsTo`
+ * (ADR 0018, the groundwork for Solidity `console.log`). The 1.5 KB is
+ * `recordCallsDuring` in `src/engine.ts` (a `beforeMessage` listener attached
+ * only for a request that asked), its two call sites, and the text of
+ * `connectEngine`'s new refusal of an engine that does not declare
+ * `recordsCalls` when the node requires it, which names the engine, the
+ * capability and the engine's own reason. It is in the CORE graph because the
+ * default engine is. No import was added. Still zero bytes of `revm-wasm`.
  *
  * 450.5 -> 451.7 KB raw / 136.0 -> 136.3 KB gzip, by `snapshots-in-the-core`:
  * `evm_snapshot` / `evm_revert` and anvil's `anvil_snapshot` / `anvil_revert`
@@ -485,7 +496,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 451.7, gzipKB: 136.3};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 453.2, gzipKB: 136.8};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

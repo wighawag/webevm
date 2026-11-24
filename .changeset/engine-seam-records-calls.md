@@ -1,0 +1,5 @@
+---
+'webevm': minor
+---
+
+The engine seam can record calls to an address, the groundwork for Solidity `console.log` support (nothing user-visible changes yet). `ReadCallRequest` and `TransactionRequest` gain an optional `recordCallsTo`, and `ReadCallResult` and `TransactionResult` an optional `recordedCalls`: the input bytes of every CALL, STATICCALL, DELEGATECALL and CALLCODE frame into that address, in execution order, whatever the frame's outcome, never a CREATE and never a frame refused before it runs. It is the one result field that is not receipt data, and execution, gas and state are identical with and without it. `Engine` gains an optional `recordsCalls` declaration (`true`, or `{unavailable: reason}`): the default `@ethereumjs/evm` engine declares it, `webevm/revm` reports it unavailable until it moves to revm-wasm outcome format 5, and a node that requires call recording refuses, at construction, an engine that does not declare it. See `docs/adr/0018-console-log-is-observed-never-answered.md`.
