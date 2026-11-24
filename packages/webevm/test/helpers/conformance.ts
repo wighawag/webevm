@@ -548,7 +548,7 @@ const MIN_TRANSACTIONS_ON_THE_ENGINE = 20;
  * is still a transaction that ran nowhere else. The wrapper delegates and adds
  * nothing else: same `id`, same `connect` (only when the engine has one, so an
  * engine that needs no connection is not given a fake one), same `call`, and the
- * same `ecrecover` when the engine has one.
+ * same `ecrecover` and `recordsCalls` when the engine has them.
  *
  * FORWARDING THE OPTIONAL METHODS IS LOAD-BEARING, not tidiness: this wrapper
  * rebuilds the engine object field by field, so an optional seam method it forgot
@@ -577,6 +577,11 @@ export function countingEngines(
 						ecrecover: (hash, recoveryId, r, s) =>
 							engine.ecrecover!(hash, recoveryId, r, s),
 					}
+				: {}),
+			// The declared call-recording capability (ADR 0018), forwarded for the
+			// same reason: without it a console-logging node refuses the wrapper.
+			...(engine.recordsCalls !== undefined
+				? {recordsCalls: engine.recordsCalls}
 				: {}),
 			transact: (request) => {
 				transactionsByEngine[engine.id] =

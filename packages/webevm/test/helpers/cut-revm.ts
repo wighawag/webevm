@@ -8,10 +8,18 @@
  * the revm subpath itself exists to preserve for consumers.
  *
  * Modes (one per revm spec):
- *   - 'call-recording': the declared call-recording capability (ADR 0018):
- *                      this engine does not declare `recordsCalls` yet, and
- *                      `connectEngine` requiring it refuses, quoting the
- *                      engine's reason (its outcome format and the one needed)
+ *   - 'call-recording': call recording (ADR 0018): the engine declares
+ *                      `recordsCalls` on outcome format 5, the seam's recording
+ *                      scenario gives the default engine's lists, and an older
+ *                      artifact is refused when recording is required, quoting
+ *                      the engine's reason (its outcome format and the one needed)
+ *   - 'console-log-node': the SHARED console-log delivery battery
+ *                      (helpers/console-log-node.ts) with revm executing:
+ *                      transactions, eth_call, mining paths, sinks, identity on
+ *                      and off, failures, reload and the estimation opt-in
+ *   - 'revm-worker-console-log': console logging on a revm-backed WORKER node
+ *                      (helpers/revm-console-log-worker.ts), entries delivered
+ *                      to a main-thread subscriber
  *   - 'revm-engine'  : the engine itself — same results + same gas as the
  *                      default engine, the node's own state, purity, BLOCKHASH,
  *                      both wasm delivery shapes, the refused state mode
@@ -157,6 +165,8 @@ import {runStateCheatAliasChecks} from './state-cheat-aliases.js';
 import {runSnapshotChecks} from './snapshots.js';
 import {createRevmEngine} from '../../src/revm.js';
 import {runRevmCallRecordingChecks} from './revm-call-recording.js';
+import {runConsoleLogNodeChecks} from './console-log-node.js';
+import {runRevmWorkerConsoleLogChecks} from './worker-console-log.js';
 import {runTrieDerivedChecks} from './trie-derived.js';
 import {runStorageCollisionChecks} from './storage-collision.js';
 import {runStateTests} from './statetest.js';
@@ -189,12 +199,39 @@ const cut: CodeUnderTest = {
 			return {results, timings, errors, env: captureEnv()};
 		}
 
-		// The declared call-recording capability, which this engine does not have
-		// yet: refused when required, with the engine's own reason.
+		// Call recording: declared on outcome format 5, the same lists as the
+		// default engine, and an older artifact refused with the engine's reason.
 		if (ctx.params.mode === 'call-recording') {
 			try {
 				results.revmCallRecording =
 					await runRevmCallRecordingChecks(bundlerResolvedWasm);
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The SHARED console-log delivery battery, with revm executing.
+		if (ctx.params.mode === 'console-log-node') {
+			try {
+				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
+				results.revmConsoleLogNode = await runConsoleLogNodeChecks({
+					makeEngine: () => createRevmEngine({wasm}),
+				});
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// Console logging on a revm-backed node IN A WORKER, observed here.
+		if (ctx.params.mode === 'revm-worker-console-log') {
+			try {
+				const wasm = await WebAssembly.compile(bundlerResolvedWasm);
+				results.revmWorkerConsoleLog = await runRevmWorkerConsoleLogChecks(
+					String(ctx.params.workerUrl),
+					() => createRevmEngine({wasm}),
+				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

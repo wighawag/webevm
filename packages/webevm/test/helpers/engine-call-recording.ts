@@ -3,8 +3,9 @@
  * (`recordCallsTo` in, `recordedCalls` out, the declared `recordsCalls`
  * capability), driven AT THE SEAM: the default engine is built directly from a
  * VM, exactly as `createNode` builds it, and `connectEngine` is called directly.
- * `createNode` sets no `recordCallsTo` yet, so there is nothing to see through
- * the node. See `docs/adr/0018-console-log-is-observed-never-answered.md`.
+ * (Through the node, console logging is ./console-log-node.ts.) The scenario
+ * half also runs on `webevm/revm`, held to the same lists
+ * (./revm-call-recording.ts). See `docs/adr/0018-console-log-is-observed-never-answered.md`.
  *
  * What this pins:
  *   1. A read and a transaction with `recordCallsTo` return the input of every
@@ -82,8 +83,19 @@ interface Rig {
 	nonce: bigint;
 }
 
-/** A fresh default engine on a fresh state, the sender funded: what `createNode` builds. */
-async function rig(): Promise<Rig> {
+/**
+ * Builds an UNCONNECTED engine for {@link rig} to bind to its own state: how
+ * the revm cut runs this same scenario on `webevm/revm`
+ * (./revm-call-recording.ts). Absent, the default engine is built from the VM.
+ */
+export type CallRecordingEngineFactory = () => Promise<Engine>;
+
+/**
+ * A fresh engine on a fresh state, the sender funded: what `createNode` builds.
+ * The default engine unless `makeEngine` is given, which is connected here to
+ * the same state, fork and block, exactly as `connectEngine` would.
+ */
+async function rig(makeEngine?: CallRecordingEngineFactory): Promise<Rig> {
 	const common = new Common({
 		chain: {...Mainnet, chainId: 31337, name: 'webevm'},
 		hardfork: Hardfork.Osaka,
@@ -114,8 +126,19 @@ async function rig(): Promise<Rig> {
 		},
 		{common},
 	);
+	let engine: Engine;
+	if (makeEngine === undefined) {
+		engine = createEthereumjsEngine({vm, stateManager: sm});
+	} else {
+		engine = await makeEngine();
+		await connectEngine(
+			engine,
+			{stateManager: sm, common, getBlockHash: () => undefined},
+			{recordCalls: true},
+		);
+	}
 	return {
-		engine: createEthereumjsEngine({vm, stateManager: sm}),
+		engine,
 		sm,
 		common,
 		block,
@@ -221,8 +244,11 @@ async function postState(r: Rig, probe: Address): Promise<string> {
  * returned in two halves: its receipt-relevant shape (which must not depend on
  * `record`) and what it recorded.
  */
-async function scenario(record: boolean) {
-	const r = await rig();
+async function scenario(
+	record: boolean,
+	makeEngine?: CallRecordingEngineFactory,
+) {
+	const r = await rig(makeEngine);
 	const rec = (a: Address) => (record ? a : undefined);
 
 	const deploy = await transact(
@@ -306,6 +332,7 @@ async function scenario(record: boolean) {
 		recordings[k] = recorded(v);
 	}
 	return {
+		engineId: r.engine.id,
 		shapes,
 		recordings,
 		statuses: {
@@ -398,10 +425,18 @@ export async function runConnectEngineRecordingChecks() {
 	return out;
 }
 
-export async function runEngineCallRecordingChecks() {
-	const recording = await scenario(true);
-	const plain = await scenario(false);
+/**
+ * The recording scenario (what is recorded, and gas identity with recording on
+ * and off) on ONE engine: the default one, or the one `makeEngine` builds. The
+ * revm cut runs it on both and the spec holds both to the same lists.
+ */
+export async function runCallRecordingScenarios(
+	makeEngine?: CallRecordingEngineFactory,
+) {
+	const recording = await scenario(true, makeEngine);
+	const plain = await scenario(false, makeEngine);
 	return {
+		engineId: recording.engineId,
 		target: TARGET.toString(),
 		recording: recording.recordings,
 		plain: plain.recordings,
@@ -414,6 +449,12 @@ export async function runEngineCallRecordingChecks() {
 		shapesRecording: recording.shapes,
 		shapesPlain: plain.shapes,
 		postStateIdentical: recording.postState === plain.postState,
+	};
+}
+
+export async function runEngineCallRecordingChecks() {
+	return {
+		...(await runCallRecordingScenarios()),
 		connect: await runConnectEngineRecordingChecks(),
 	};
 }

@@ -21,7 +21,7 @@
 import {createNode} from '../../src/node.js';
 import {createWorkerNode} from '../../src/worker-client.js';
 import {consoleLog, type ConsoleLogEntry} from '../../src/console-log.js';
-import type {NodeOptions, SlimNode} from '../../src/types.js';
+import type {Engine, NodeOptions, SlimNode} from '../../src/types.js';
 import {encodeFunctionData, type Hex} from 'viem';
 import {privateKeyToAccount} from 'viem/accounts';
 import {
@@ -185,12 +185,21 @@ async function scenario(node: SlimNode) {
 	};
 }
 
-/** 1. entries over comlink, field for field, and the default sink in the worker. */
-async function delivered(workerUrl: string) {
+/**
+ * 1. entries over comlink, field for field, and the default sink in the worker.
+ * The reference node runs on `makeEngine`'s engine when given, which must be the
+ * engine the worker module builds (`./revm-console-log-worker.ts` for revm).
+ */
+async function delivered(
+	workerUrl: string,
+	makeEngine?: () => Promise<Engine>,
+) {
 	const reference = await createNode({
 		...nodeOptions(),
+		...(makeEngine !== undefined ? {engine: await makeEngine()} : {}),
 		consoleLog: consoleLog({onLog: () => {}}),
 	});
+	const referenceEngineId = reference.engine.id;
 	const mainThread = await scenario(reference);
 	await reference.dispose();
 
@@ -203,6 +212,8 @@ async function delivered(workerUrl: string) {
 		);
 		await settle();
 		return {
+			referenceEngineId,
+			workerEngineId: node.engine.id,
 			mainThread,
 			worker,
 			workerConsole: reports.reports.filter((r) => r.from === 'console.log'),
@@ -315,4 +326,16 @@ export async function runWorkerConsoleLogChecks(workerUrl: string) {
 		throws: await driveMisusedEngineWorker(withMode(workerUrl, 'throws')),
 		clientRefusal: await clientRefusal(),
 	};
+}
+
+/**
+ * The revm case: a worker module building a revm engine AND console logging
+ * (`./revm-console-log-worker.ts`) delivers to a subscriber here, field for
+ * field what a main-thread revm node delivers for the same chain.
+ */
+export async function runRevmWorkerConsoleLogChecks(
+	workerUrl: string,
+	makeEngine: () => Promise<Engine>,
+) {
+	return {delivered: await delivered(workerUrl, makeEngine)};
 }

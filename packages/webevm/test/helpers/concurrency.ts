@@ -963,12 +963,8 @@ async function reentrancyChecks(
 	// request the callback issues QUEUES and resolves after the one that logged.
 	// Once for a mined transaction (the probe's constructor logs) and once for an
 	// `eth_call` (its `peek` view logs). The order is the assertion, as above.
-	//
-	// ON THE DEFAULT ENGINE ONLY, until `console-log-on-the-revm-engine`: a
-	// console-logging node refuses an engine that does not declare `recordsCalls`,
-	// which `webevm/revm` does not yet, so on it this reports that instead.
+	// On both engines: `webevm/revm` records calls too (revm-wasm outcome format 5).
 	await check('onConsoleLog-calls-back', async () => {
-		if (makeEngine) return 'not on this engine: it does not record calls yet';
 		const h = await harness(makeEngine, {
 			consoleLog: consoleLog({onLog: () => {}}),
 		});

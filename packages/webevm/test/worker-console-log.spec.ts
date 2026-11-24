@@ -6,12 +6,14 @@
  * does (ADR 0018, "In a Worker, console logging is enabled in the worker
  * module"). Driven by helpers/worker-console-log.ts against the worker module
  * helpers/console-log-worker.ts. Without the option nothing changes, which
- * `worker.spec.ts` keeps proving untouched.
+ * `worker.spec.ts` keeps proving untouched. The delivery assertions are in
+ * ./worker-console-log-expected.ts, shared with revm-worker-console-log.spec.ts.
  */
 import {test, expect} from '@playwright/test';
 import {fileURLToPath} from 'node:url';
 import {dirname, resolve} from 'node:path';
 import {mountHarness} from 'playwright-browser-harness';
+import {assertWorkerDelivered} from './worker-console-log-expected.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cut = resolve(here, './helpers/cut.ts');
@@ -37,45 +39,9 @@ test('console logging in a Worker: enabled in the worker module, observed from t
 	expect(r.errors).toEqual([]);
 
 	// ---- 1. entries over comlink, the same as on the main thread ----
-	const {mainThread, worker} = c.delivered;
-	expect(mainThread.arrived).toBe(true);
-	expect(worker.arrived).toBe(true);
-	expect(worker.otherArrived).toBe(true);
-	expect(worker.subscribed.map((e: any) => e.source)).toEqual([
-		'transaction',
-		'transaction',
-		'transaction',
-		'transaction',
-		'eth_call',
-	]);
-	// Field for field, a transaction's hash, block and index included.
-	expect(worker.subscribed).toEqual(mainThread.subscribed);
-	expect(worker.subscribed[0]).toMatchObject({
-		source: 'transaction',
-		blockNumber: 1,
-		txIndex: 0,
-		txHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
-		blockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
-	});
-	expect(worker.subscribed[4]).toEqual({
-		args: ['peek by', expect.stringMatching(/^0x/), 'count', '1n'],
-		message: expect.stringMatching(/^peek by 0x[0-9a-fA-F]{40} count 1$/),
-		source: 'eth_call',
-	});
-	// Unsubscribe stops them; the other subscriber still gets the next ones.
-	expect(worker.afterUnsubscribe).toEqual([]);
-	expect(mainThread.afterUnsubscribe).toEqual([]);
-	expect(worker.other).toHaveLength(8);
-	expect(worker.other).toEqual(mainThread.other);
-
-	// ...and the default sink printed each of them in the WORKER's console.
-	expect(c.delivered.workerConsole).toEqual(
-		worker.other.map((e: any) => ({
-			from: 'console.log',
-			onWorker: true,
-			args: ['[webevm console.log]', e.message],
-		})),
-	);
+	expect(c.delivered.referenceEngineId).toBe('@ethereumjs/evm');
+	expect(c.delivered.workerEngineId).toBe('@ethereumjs/evm');
+	assertWorkerDelivered(c.delivered);
 
 	// ---- 2. a custom onLog runs on the worker, instead of the default print ----
 	expect(c.onLog).toEqual([

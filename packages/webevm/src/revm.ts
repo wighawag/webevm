@@ -214,31 +214,29 @@ export const REVM_REFUSED_HARDFORKS: Readonly<Record<string, string>> =
 const REVM_CALL_RECORDING_OUTCOME_FORMAT = 5;
 
 /**
- * WHY THIS ENGINE DOES NOT RECORD CALLS, as the `unavailable` reason of its
- * `recordsCalls` declaration, which `connectEngine` quotes verbatim when a
- * console-logging node is refused.
+ * THIS ENGINE'S CALL-RECORDING DECLARATION (`Engine.recordsCalls`), decided from
+ * the LOADED ARTIFACT when the engine is built, never at the first call, so
+ * `connectEngine` checks it at construction (ADR 0018).
  *
- * Decided from the LOADED ARTIFACT, when the engine is built, never at the first
- * call (ADR 0018). Below format {@link REVM_CALL_RECORDING_OUTCOME_FORMAT} the
- * artifact cannot record at all. AT OR ABOVE IT (a consumer who loaded a newer
- * revm-wasm build than this release depends on) the artifact could, but this
- * engine does not yet pass `recordCallsTo` to it nor read `recordedCalls` back,
- * so it still declines rather than claiming a capability it would leave mute;
- * the reason then says that instead of blaming the artifact. Wiring it is task
- * `console-log-on-the-revm-engine`, which raises the dependency to 0.6.0 and
- * makes this engine declare `true`.
+ * At or above outcome format {@link REVM_CALL_RECORDING_OUTCOME_FORMAT} the
+ * engine records: `call` and `transact` pass the request's `recordCallsTo` to
+ * revm-wasm and map its `recordedCalls` back. Below it (a consumer who passed
+ * their own, older `wasm`) the artifact cannot record at all, and revm-wasm's
+ * loader would THROW on `recordCallsTo` rather than return an empty list, so the
+ * engine declines and says why: the reason names the outcome format the artifact
+ * has and the one console logging needs, and `connectEngine` quotes it verbatim
+ * when a console-logging node is refused. A node that does not log never asks,
+ * so such an artifact keeps working everywhere else.
  */
-function revmCallRecordingUnavailable(outcomeFormat: number): string {
-	if (outcomeFormat < REVM_CALL_RECORDING_OUTCOME_FORMAT) {
-		return (
+function revmRecordsCalls(
+	outcomeFormat: number,
+): true | {readonly unavailable: string} {
+	if (outcomeFormat >= REVM_CALL_RECORDING_OUTCOME_FORMAT) return true;
+	return {
+		unavailable:
 			`console logging needs revm-wasm outcome format ${REVM_CALL_RECORDING_OUTCOME_FORMAT} ` +
-			`(revm-wasm 0.6.0 or later); this engine's artifact has outcome format ${outcomeFormat}`
-		);
-	}
-	return (
-		`this engine's artifact has outcome format ${outcomeFormat}, which can record calls, ` +
-		`but this release of webevm/revm does not pass \`recordCallsTo\` to revm-wasm yet`
-	);
+			`(revm-wasm 0.6.0 or later); this engine's artifact has outcome format ${outcomeFormat}`,
+	};
 }
 
 /**
@@ -282,12 +280,9 @@ export async function createRevmEngine(
 	return {
 		id: REVM_ENGINE_ID,
 
-		// CALL RECORDING IS NOT DECLARED YET, and the engine says why, so a
-		// console-logging node's refusal can name what is missing (ADR 0018). See
-		// {@link revmCallRecordingUnavailable}.
-		recordsCalls: {
-			unavailable: revmCallRecordingUnavailable(revm.outcomeFormatVersion),
-		},
+		// CALL RECORDING, declared from the artifact's outcome format (or refused
+		// with the reason why), see {@link revmRecordsCalls}.
+		recordsCalls: revmRecordsCalls(revm.outcomeFormatVersion),
 
 		connect(context: EngineContext): void {
 			// A HARDFORK THIS ENGINE CANNOT COST, refused out loud and at construction:
@@ -454,6 +449,10 @@ export async function createRevmEngine(
 				// Logs and the post-state map are not part of a read's answer, and
 				// building them costs ~0.9 microseconds per call.
 				returnState: false,
+				// Console logging's observation (ADR 0018): revm-wasm records the
+				// input of every frame running this address's code, and changes
+				// nothing about the execution. Allowed with `returnState: false`.
+				...recordCallsToOf(request.recordCallsTo),
 			};
 
 			// A CREATE-shaped read (`eth_estimateGas` for a deployment) has to go
@@ -508,6 +507,9 @@ export async function createRevmEngine(
 					: rejected
 						? rejectionMessage(outcome.error)
 						: (outcome.error ?? `revm ${outcome.status}`),
+				// Present exactly when requested; a read refused by validation
+				// reports an EMPTY list (nothing ran), as the default engine does.
+				...recordedCallsOf(outcome),
 			};
 		},
 
@@ -573,7 +575,11 @@ export async function createRevmEngine(
 				spec,
 				chainId,
 				block: blockEnvOf(request.block),
-				// AND NOTHING ELSE. No `commit` (it defaults to committing, which is what
+				// Console logging's observation (ADR 0018), the one option this path
+				// shares with the read path: it changes no validity rule and nothing
+				// about the execution, and revm-wasm allows it with committing.
+				...recordCallsToOf(request.recordCallsTo),
+				// AND NOTHING ELSE (but the observation just above). No `commit` (it defaults to committing, which is what
 				// this method IS), no `returnState` (the logs, the bloom and the account
 				// changes are all part of a transaction's answer, and `returnState:false`
 				// cannot be combined with committing anyway), and above all NONE of the
@@ -664,6 +670,7 @@ export async function createRevmEngine(
 				// `logsBloom`, which is why this path uses `revm-wasm`'s own decoder.
 				logsBloom: outcome.logsBloom ?? EMPTY_BLOOM,
 				...(created !== undefined ? {createdAddress: created} : {}),
+				...recordedCallsOf(outcome),
 			};
 		},
 
@@ -697,6 +704,32 @@ export async function createRevmEngine(
 			return revm.recoverSigner({hash, v: recoveryId, r, s});
 		},
 	};
+}
+
+/**
+ * The seam's `recordCallsTo` as revm-wasm's option: an empty object when the
+ * request did not ask, so a request without it is byte-for-byte the request it
+ * was before call recording existed.
+ */
+function recordCallsToOf(target: {readonly bytes: Uint8Array} | undefined): {
+	recordCallsTo?: Uint8Array;
+} {
+	return target === undefined ? {} : {recordCallsTo: target.bytes};
+}
+
+/**
+ * revm-wasm's `recordedCalls` as the seam's field: PASSED THROUGH, present
+ * exactly when revm-wasm reports it, which is exactly when the request set
+ * `recordCallsTo`. Never defaulted to an empty list here: an artifact that was
+ * asked and answered nothing must reach the node's guard (`recordedCallsOf` in
+ * ./node.ts), which throws, rather than deliver a silent empty log.
+ */
+function recordedCallsOf(outcome: Outcome): {
+	recordedCalls?: readonly Uint8Array[];
+} {
+	return outcome.recordedCalls === undefined
+		? {}
+		: {recordedCalls: outcome.recordedCalls};
 }
 
 /** Calldata for a transaction that carries none. */

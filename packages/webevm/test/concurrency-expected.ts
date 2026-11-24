@@ -182,13 +182,9 @@ export function assertConcurrencyReport(c: ConcurrencyReport, expect: Expect) {
 	);
 	// The same for an `onConsoleLog` subscriber (ADR 0018), from a mined
 	// transaction and from an `eth_call`: each callback's request resolved after
-	// the request that logged. On the default engine only until
-	// `console-log-on-the-revm-engine`, since a console-logging node refuses an
-	// engine that does not declare `recordsCalls`.
+	// the request that logged, on either engine.
 	expect(c.reentrancy.completed['onConsoleLog-calls-back']).toBe(
-		c.engineId === '@ethereumjs/evm'
-			? 'transaction readBack=1 eth_call readBack=1 order=transaction,transaction:callbackRead,call,eth_call:callbackRead'
-			: 'not on this engine: it does not record calls yet',
+		'transaction readBack=1 eth_call readBack=1 order=transaction,transaction:callbackRead,call,eth_call:callbackRead',
 	);
 	expect(c.reentrancy.completed['persistence-hook']).toBe('saves=2 counter=1');
 	// EVERY ONE OF FOUR POLLS DURING A SLOW SAVE IS ANSWERED. This is the check

@@ -141,10 +141,23 @@ function client(node: SlimNode) {
 	};
 }
 
-function nodeOptions(extra: Partial<NodeOptions> = {}): NodeOptions {
+/**
+ * The engine every node of the battery runs on, set by
+ * {@link runConsoleLogNodeChecks}: absent for the default engine, a factory for
+ * `webevm/revm` (helpers/cut-revm.ts). A FACTORY, because one engine binds to
+ * one node and the battery builds many.
+ */
+let makeEngine: (() => Promise<Engine>) | undefined;
+
+async function nodeOptions(
+	extra: Partial<NodeOptions> = {},
+): Promise<NodeOptions> {
 	return {
 		chainId: CHAIN_ID,
 		initialBalances: {[account.address]: 10n ** 24n},
+		...(makeEngine !== undefined && extra.engine === undefined
+			? {engine: await makeEngine()}
+			: {}),
 		...extra,
 	};
 }
@@ -190,7 +203,9 @@ async function capturing<T>(
 async function automine() {
 	const sunk: PlainEntry[] = [];
 	const node = await createNode(
-		nodeOptions({consoleLog: consoleLog({onLog: (e) => sunk.push(plain(e))})}),
+		await nodeOptions({
+			consoleLog: consoleLog({onLog: (e) => sunk.push(plain(e))}),
+		}),
 	);
 	const c = client(node);
 	const got: PlainEntry[] = [];
@@ -226,6 +241,7 @@ async function automine() {
 			encodeFunctionData({abi: consoleLogProbeAbi, functionName: 'count'}),
 		);
 		return {
+			engineId: node.engine.id,
 			sender: account.address,
 			probe,
 			deploy: {
@@ -272,7 +288,7 @@ async function automine() {
 /** 1. manual mining: several transactions in one `mine()`, then `evm_mine`. */
 async function manual() {
 	const node = await createNode(
-		nodeOptions({
+		await nodeOptions({
 			miningConfig: {type: 'manual'},
 			consoleLog: consoleLog({onLog: () => {}}),
 		}),
@@ -320,7 +336,7 @@ async function manual() {
 /** 1. interval mining. */
 async function interval() {
 	const node = await createNode(
-		nodeOptions({
+		await nodeOptions({
 			miningConfig: {type: 'interval', intervalMs: 50},
 			consoleLog: consoleLog({onLog: () => {}}),
 		}),
@@ -351,7 +367,9 @@ async function interval() {
 async function sinks() {
 	// the default sink prints through console.log, prefixed, once per entry
 	const printed = await capturing('log', async () => {
-		const node = await createNode(nodeOptions({consoleLog: consoleLog()}));
+		const node = await createNode(
+			await nodeOptions({consoleLog: consoleLog()}),
+		);
 		const got: PlainEntry[] = [];
 		node.onConsoleLog((e) => got.push(plain(e)));
 		const c = client(node);
@@ -364,7 +382,7 @@ async function sinks() {
 	const replaced = await capturing('log', async () => {
 		const sunk: string[] = [];
 		const node = await createNode(
-			nodeOptions({
+			await nodeOptions({
 				consoleLog: consoleLog({onLog: (e) => sunk.push(e.message)}),
 			}),
 		);
@@ -406,7 +424,7 @@ async function identity() {
 	async function run(on: boolean) {
 		const got: PlainEntry[] = [];
 		const node = await createNode(
-			nodeOptions({
+			await nodeOptions({
 				computeStateRoot: true,
 				genesisTimestamp: PINNED_TIME,
 				blockEnv: {timestamp: PINNED_TIME},
@@ -471,7 +489,7 @@ async function failures() {
 	async function withConsumer(kind: 'sink' | 'subscriber' | 'rejecting') {
 		return capturing('error', async () => {
 			const node = await createNode(
-				nodeOptions({
+				await nodeOptions({
 					consoleLog: consoleLog({
 						onLog:
 							kind === 'sink'
@@ -520,7 +538,7 @@ async function failures() {
 
 /** 5. a node without the option, and a bad option. */
 async function without() {
-	const node = await createNode(nodeOptions());
+	const node = await createNode(await nodeOptions());
 	const c = client(node);
 	try {
 		const onConsoleLog = syncOutcome(() => node.onConsoleLog(() => {}));
@@ -529,10 +547,10 @@ async function without() {
 			onConsoleLog,
 			deployStatus: (await c.receipt(hash)).status,
 			refusedFlag: await outcome(
-				createNode(nodeOptions({consoleLog: true as any})),
+				createNode(await nodeOptions({consoleLog: true as any})),
 			),
 			refusedFunction: await outcome(
-				createNode(nodeOptions({consoleLog: consoleLog as any})),
+				createNode(await nodeOptions({consoleLog: consoleLog as any})),
 			),
 		};
 	} finally {
@@ -559,7 +577,7 @@ async function lyingEngine() {
 		},
 	};
 	const node = await createNode(
-		nodeOptions({engine, consoleLog: consoleLog({onLog: () => {}})}),
+		await nodeOptions({engine, consoleLog: consoleLog({onLog: () => {}})}),
 	);
 	const c = client(node);
 	try {
@@ -575,7 +593,7 @@ async function lyingEngine() {
 /** 7. no entry is replayed by `loadState` or by a persistence reload. */
 async function reload() {
 	const source = await createNode(
-		nodeOptions({consoleLog: consoleLog({onLog: () => {}})}),
+		await nodeOptions({consoleLog: consoleLog({onLog: () => {}})}),
 	);
 	const c = client(source);
 	const {address} = await c.deploy();
@@ -585,7 +603,7 @@ async function reload() {
 
 	const loadedSunk: string[] = [];
 	const loaded = await createNode(
-		nodeOptions({
+		await nodeOptions({
 			consoleLog: consoleLog({onLog: (e) => loadedSunk.push(e.message)}),
 		}),
 	);
@@ -600,7 +618,7 @@ async function reload() {
 
 	const reloadedSunk: string[] = [];
 	const reloaded = await createNode(
-		nodeOptions({
+		await nodeOptions({
 			persistence: createMemoryPersistence(dump),
 			consoleLog: consoleLog({onLog: (e) => reloadedSunk.push(e.message)}),
 		}),
@@ -648,12 +666,16 @@ async function worker(workerUrl: string) {
 const STUB_CONSUMED_BUDGET = 246_727n;
 const STUB_SHORTFALL_BUDGET = 249_826n;
 
-/** 9. estimation prints nothing unless asked, and then only its first execution. */
-async function estimation() {
+/**
+ * 9. estimation prints nothing unless asked, and then only its first execution.
+ * The stub half and the option refusals involve no real engine, so they run
+ * only when `engineFree` (the default battery).
+ */
+async function estimation(engineFree: boolean) {
 	// ---- on the real fixture, default vs `estimateGas: 'first'` ----
 	async function real(estimateGas: 'none' | 'first' | undefined) {
 		const node = await createNode(
-			nodeOptions({
+			await nodeOptions({
 				consoleLog: consoleLog({
 					onLog: () => {},
 					...(estimateGas === undefined ? {} : {estimateGas}),
@@ -726,7 +748,7 @@ async function estimation() {
 			},
 		};
 		const node = await createNode(
-			nodeOptions({
+			await nodeOptions({
 				engine,
 				consoleLog: consoleLog({onLog: () => {}, estimateGas}),
 			}),
@@ -759,18 +781,20 @@ async function estimation() {
 	}
 
 	const sync = (f: () => unknown) => syncOutcome(f);
+	const realHalf = {
+		omitted: await real(undefined),
+		none: await real('none'),
+		first: await real('first'),
+	};
+	if (!engineFree) return {real: realHalf};
 	return {
-		real: {
-			omitted: await real(undefined),
-			none: await real('none'),
-			first: await real('first'),
-		},
+		real: realHalf,
 		stub: {none: await stub('none'), first: await stub('first')},
 		stubAnswerExpected: `0x${(21_000n + STUB_SHORTFALL_BUDGET).toString(16)}`,
 		refusedValue: sync(() => consoleLog({estimateGas: 'all' as any})),
 		refusedObject: await outcome(
 			createNode(
-				nodeOptions({
+				await nodeOptions({
 					consoleLog: {...consoleLog(), estimateGas: true as any},
 				}),
 			),
@@ -779,21 +803,40 @@ async function estimation() {
 }
 
 export interface ConsoleLogNodeParams {
-	workerUrl: string;
+	/**
+	 * The `worker-entry` URL for case 8. Absent when the battery runs on another
+	 * engine: that case and the other engine-free ones (6, the estimation stub
+	 * and the option refusals) are the default spec's alone.
+	 */
+	workerUrl?: string;
+	/** Run every node on this engine (one per node) instead of the default one. */
+	makeEngine?: () => Promise<Engine>;
 }
 
 export async function runConsoleLogNodeChecks(params: ConsoleLogNodeParams) {
-	return {
-		automine: await automine(),
-		manual: await manual(),
-		interval: await interval(),
-		sinks: await sinks(),
-		identity: await identity(),
-		failures: await failures(),
-		without: await without(),
-		lyingEngine: await lyingEngine(),
-		reload: await reload(),
-		worker: await worker(params.workerUrl),
-		estimation: await estimation(),
-	};
+	makeEngine = params.makeEngine;
+	try {
+		const engineFree = params.makeEngine === undefined;
+		return {
+			automine: await automine(),
+			manual: await manual(),
+			interval: await interval(),
+			sinks: await sinks(),
+			identity: await identity(),
+			failures: await failures(),
+			without: await without(),
+			reload: await reload(),
+			estimation: await estimation(engineFree),
+			...(engineFree
+				? {
+						lyingEngine: await lyingEngine(),
+						...(params.workerUrl !== undefined
+							? {worker: await worker(params.workerUrl)}
+							: {}),
+					}
+				: {}),
+		};
+	} finally {
+		makeEngine = undefined;
+	}
 }
