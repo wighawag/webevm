@@ -190,9 +190,25 @@ A `SlimNode`, the same interface webevm's own nodes have, so it drops in whereve
 - `serveOn(port)` serves the dev node's `request`, so a consumer on another thread using `providerOverPort(port)` from `@eip-1193/over-port` sees the dev accounts too.
 - `dispose()` stops answering on the ports it served, then disposes the node.
 - The cheats and snapshots are the core's, and reach it unchanged: `hardhat_setBalance` / `hardhat_setNonce` / `hardhat_setCode` / `hardhat_setStorageAt` and their `anvil_` names, `evm_mine`, `anvil_mine` / `hardhat_mine`, the time cheats, and `evm_snapshot` / `evm_revert` (and `anvil_snapshot` / `anvil_revert`). The layer holds no chain state of its own (a send reads the pending nonce from the node), so a revert also rolls back what the dev node reads: a dev account that sent inside the snapshot's window sends again at the earlier nonce. See webevm's README for each method's wire shape.
-- Every other member (`mine`, `dumpState`, `loadState`, `onNewHead`, `getStateRoot`, `computeStateRoot`, `senderMode`, `engine`) is the node's own.
+- Every other member (`mine`, `dumpState`, `loadState`, `onNewHead`, `onConsoleLog`, `getStateRoot`, `computeStateRoot`, `senderMode`, `engine`) is the node's own.
 
 It works with either engine, the default `@ethereumjs/evm` and `webevm/revm`, in any browser webevm runs in (the suite runs on Chromium and WebKit).
+
+## Solidity console.log
+
+The dev node passes webevm's console logging through unchanged. `createDevNode` hands the `consoleLog` option to the node it creates, like every other webevm option, and `onConsoleLog` on the dev node is the node's own, so a subscriber receives the entries of every transaction and read that goes through the dev node, a dev account's `eth_sendTransaction` included:
+
+```ts
+import {createDevNode} from '@webevm/devnode';
+import {consoleLog} from 'webevm/console-log';
+
+const node = await createDevNode({consoleLog: consoleLog()});
+node.onConsoleLog((entry) => {
+	// {args, message, source}, plus txHash, blockNumber, blockHash and txIndex for a mined transaction
+});
+```
+
+To log through `wrapDevNode`, create the node you wrap with `consoleLog`. On a node without console logging, the dev node's `onConsoleLog` throws the node's own error, naming the option. See webevm's README for the entry, the sink and when entries are delivered.
 
 ## Handing a chain to forge
 
