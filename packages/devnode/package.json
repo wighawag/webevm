@@ -1,6 +1,6 @@
 {
 	"name": "@webevm/devnode",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Dev accounts for webevm: a SlimNode decorator that answers eth_accounts with anvil's / Hardhat's test accounts, funded at genesis, and forwards everything else to the node.",
 	"keywords": [
 		"ethereum",
