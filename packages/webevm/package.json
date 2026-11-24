@@ -36,6 +36,10 @@
 			"types": "./dist/revm.d.ts",
 			"default": "./dist/revm.js"
 		},
+		"./console-log": {
+			"types": "./dist/console-log.d.ts",
+			"default": "./dist/console-log.js"
+		},
 		"./worker-entry": {
 			"types": "./dist/worker-entry.d.ts",
 			"default": "./dist/worker-entry.js"

@@ -19,6 +19,9 @@
  *                            `recordedCalls`) on the default engine, driven at
  *                            the seam, and `connectEngine` enforcing the
  *                            declared `recordsCalls` capability
+ *   - 'console-log'        : `webevm/console-log` with no node: the selector
+ *                            table, the decoder, the formatter and the sink,
+ *                            over vectors the spec encodes
  *   - 'rpc-block'          : the RPC block and the EVM describe the SAME block
  *                            (miner / mixHash / logsBloom), on both sides of a
  *                            dumpState/loadState round trip, plus an old dump
@@ -145,6 +148,7 @@ import {slimNodeHonestyChecks} from './slim-node-checks.js';
 import {runStorageOverlayChecks} from './storage-overlay.js';
 import {runEngineSeamChecks} from './engine-seam.js';
 import {runEngineCallRecordingChecks} from './engine-call-recording.js';
+import {runConsoleLogChecks, type ConsoleLogParams} from './console-log.js';
 import {runRpcBlockChecks} from './rpc-block.js';
 import {runEstimateGasChecks} from './estimate-gas.js';
 import {runBlockPinnedStateChecks} from './block-pinned-state.js';
@@ -244,6 +248,19 @@ const cut: CodeUnderTest = {
 		if (ctx.params.mode === 'engine-call-recording') {
 			try {
 				results.engineCallRecording = await runEngineCallRecordingChecks();
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// console-log: decoding and formatting console calls, and the sink; no
+		// node involved (ADR 0018).
+		if (ctx.params.mode === 'console-log') {
+			try {
+				results.consoleLog = await runConsoleLogChecks(
+					ctx.params as unknown as ConsoleLogParams,
+				);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

@@ -1,7 +1,8 @@
 # Test fixtures
 
-Two unrelated things live here. The `GeneralStateTests/` tree is vendored from
-`ethereum/tests`; `dumpstate-flat-layout.json` is one of ours.
+Three unrelated things live here. The `GeneralStateTests/` tree is vendored from
+`ethereum/tests`; the `console-log/` tree is vendored from Hardhat and forge-std;
+`dumpstate-flat-layout.json` is one of ours.
 
 ## `dumpstate-flat-layout.json` — a `dumpState()` captured from the PRE-OVERLAY build
 
@@ -76,3 +77,17 @@ option, applies `env` via `blockEnv`, submits `txbytes` through
 `eth_sendRawTransaction`, then compares `node.getStateRoot()` to `hash`. This only
 works with `computeStateRoot: true` (the default computes no root, by design), which is
 exactly the point of that opt-in.
+
+## Vendored Solidity console libraries (for `webevm/console-log`)
+
+The three libraries whose calls `webevm/console-log` decodes, copied verbatim with their licences, used by [`../console-log.spec.ts`](../console-log.spec.ts): it parses every function signature out of them and asserts that the selector table in `src/console-log-decoder.ts` is exactly those signatures plus their legacy `uint` / `int` aliases (minus forge-std's array-taking `console.table`, a decision recorded in that file), and that each one decodes. Pulled 2026-11-24, each at its repository's latest release tag on that day.
+
+| file | repository | tag | commit | path in repo | licence |
+|---|---|---|---|---|---|
+| `console-log/hardhat/console.sol` | <https://github.com/NomicFoundation/hardhat> | `hardhat@3.22.0` | `0edb1e0f26ba2d0805785b7e868bfe6da5989da4` | `packages/hardhat/console.sol` | MIT, `console-log/hardhat/LICENSE` (from `packages/hardhat/LICENSE`) |
+| `console-log/forge-std/console.sol` | <https://github.com/foundry-rs/forge-std> | `v1.17.0` | `f3dae6e6ee381f25eb6a246f7da9b85c91a68219` | `src/console.sol` | MIT OR Apache-2.0, `console-log/forge-std/LICENSE-MIT` and `LICENSE-APACHE` |
+| `console-log/forge-std/console2.sol` | <https://github.com/foundry-rs/forge-std> | `v1.17.0` | `f3dae6e6ee381f25eb6a246f7da9b85c91a68219` | `src/console2.sol` | as above |
+
+At this pin forge-std's `console2.sol` is a one-line re-export of `console.sol` (`import {console as console2} from "./console.sol";`), so it adds no signature of its own; the spec asserts that, so a re-pin where it diverges again is noticed. forge-std's `console.sol` has one `log` overload Hardhat's lacks, `log(string,int256)`, and twelve `table(...)` functions taking arrays.
+
+To re-pull, fetch the same paths at the new tags (`https://raw.githubusercontent.com/<repo>/<tag>/<path>`), update this table, and run the spec: a signature the generated table does not produce, or one it produces that the files do not declare, fails it.
