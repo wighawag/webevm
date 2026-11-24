@@ -4,6 +4,7 @@ slug: console-log-on-the-revm-engine
 spec: solidity-console-log
 blockedBy: [console-log-delivered-from-transactions-and-eth-call, console-log-from-the-first-estimation-on-request, console-log-in-a-worker]
 covers: []
+needsAnswers: true
 ---
 
 ## The external dependency (resolved 2026-11-24)
