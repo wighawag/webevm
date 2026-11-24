@@ -49,4 +49,4 @@ Enabling it changes NOTHING about execution: same return data, same gas, same re
 - General tracing (`debug_traceTransaction`, call traces). The seam opt-in records calls to one address only; it is not a tracer.
 - Persisting logs, or reproducing them on `loadState` / reload.
 - Hardhat's other network-level logging (printing every RPC method and transaction summary).
-- Console logging on the revm engine, until a revm-wasm release carries outcome format 5: the follow-up task `console-log-on-the-revm-engine`, not missing work.
+- Console logging on the revm engine, until webevm moves to `revm-wasm@0.6.0` (outcome format 5, published 2026-11-24): the follow-up task `console-log-on-the-revm-engine`, not missing work.

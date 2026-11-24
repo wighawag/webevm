@@ -2,7 +2,7 @@
 title: @webevm/devnode: onConsoleLog reaches the node through the dev node
 slug: devnode-forwards-on-console-log
 spec: solidity-console-log
-blockedBy: [devnode-package-dev-accounts-funded-at-genesis, console-log-delivered-from-transactions-and-eth-call]
+blockedBy: [devnode-package-dev-accounts-funded-at-genesis, devnode-eth-send-transaction-from-dev-accounts, console-log-delivered-from-transactions-and-eth-call]
 covers: [13]
 ---
 
@@ -20,6 +20,7 @@ covers: [13]
 ## Blocked by
 
 - `devnode-package-dev-accounts-funded-at-genesis`
+- `devnode-eth-send-transaction-from-dev-accounts` (acceptance criterion 1 sends through the dev node's `eth_sendTransaction`)
 - `console-log-delivered-from-transactions-and-eth-call`
 
 ## Prompt
