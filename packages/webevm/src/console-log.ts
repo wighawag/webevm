@@ -82,7 +82,23 @@ export interface ConsoleLogOptions {
 	 * `[webevm console.log] <message>` through the host's `console.log`.
 	 */
 	onLog?: (entry: ConsoleLogEntry) => void;
+	/**
+	 * WHETHER ESTIMATION PRINTS. `'none'` (the default): `eth_estimateGas` and
+	 * `eth_fillTransaction`'s estimation deliver nothing. `'first'`: they deliver
+	 * the entries of the estimation's FIRST execution only, the probe at the top
+	 * of the search's range, tagged `source: 'eth_estimateGas'` or
+	 * `source: 'eth_fillTransaction'`, before the estimate is returned or its
+	 * error thrown (so a reverting estimation still prints what it logged). Never
+	 * every execution: viem estimates before nearly every send, and the search
+	 * re-executes the request up to about twenty times. An estimation refused
+	 * before anything executes (the allowance cannot pay the intrinsic gas)
+	 * delivers nothing. Any other value is refused. See ADR 0018.
+	 */
+	estimateGas?: ConsoleLogEstimateGas;
 }
+
+/** See {@link ConsoleLogOptions.estimateGas}. */
+export type ConsoleLogEstimateGas = 'none' | 'first';
 
 /**
  * The object the node's `consoleLog` option takes: the contract between this
@@ -101,6 +117,20 @@ export interface ConsoleLog {
 	 * Synchronous; the node never awaits it.
 	 */
 	sink(entry: ConsoleLogEntry): void;
+	/**
+	 * Which executions of an estimation the node records: see
+	 * {@link ConsoleLogOptions.estimateGas}. Absent means `'none'`.
+	 *
+	 * DECISION: CARRIED ON THIS OBJECT, not as a second node option, because the
+	 * spec names it `consoleLog({estimateGas})` and the injected object is the one
+	 * contract between the subpath and the core; a node option would split one
+	 * feature's configuration across two places. OPTIONAL, so an object built by
+	 * hand (with only `decode` and `sink`) still works and stays silent on
+	 * estimation. A value other than `'none'` / `'first'` is REFUSED (by
+	 * {@link consoleLog} and again by `createNode`), rather than read as
+	 * `'none'`, since silence would look like a contract that logs nothing.
+	 */
+	readonly estimateGas?: ConsoleLogEstimateGas;
 }
 
 /** The prefix the default sink prints before every message. */
@@ -121,9 +151,17 @@ function printEntry(entry: ConsoleLogEntry): void {
  * `[webevm console.log]` prefix, or handed to `onLog` instead.
  */
 export function consoleLog(options: ConsoleLogOptions = {}): ConsoleLog {
-	const {onLog} = options;
+	const {onLog, estimateGas = 'none'} = options;
+	// REFUSED HERE, not read as `'none'`: a `true` or a typo would otherwise
+	// leave estimation silent, which looks exactly like a contract that logs
+	// nothing. The node checks the same on an object it is handed.
+	if (estimateGas !== 'none' && estimateGas !== 'first')
+		throw new Error(
+			`webevm: consoleLog({estimateGas}) must be 'none' (the default) or 'first'; got ${typeof estimateGas === 'string' ? `'${estimateGas}'` : String(estimateGas)}.`,
+		);
 	return {
 		decode: decodeConsoleCall,
 		sink: onLog === undefined ? printEntry : (entry) => onLog(entry),
+		estimateGas,
 	};
 }

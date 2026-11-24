@@ -629,12 +629,15 @@ function validateConsoleLog(options: NodeOptions): ConsoleLog | undefined {
 		typeof o === 'object' &&
 		o !== null &&
 		typeof o.decode === 'function' &&
-		typeof o.sink === 'function'
+		typeof o.sink === 'function' &&
+		(o.estimateGas === undefined ||
+			o.estimateGas === 'none' ||
+			o.estimateGas === 'first')
 	)
 		return o as ConsoleLog;
 	throw new Error(
 		`webevm: consoleLog must be the object consoleLog() returns (import {consoleLog} from 'webevm/console-log'; createNode({consoleLog: consoleLog()})), ` +
-			`with a decode(input) and a sink(entry) function; got ${typeof value === 'function' ? 'a function (call it: consoleLog())' : describeOption(value)}.`,
+			`with a decode(input) and a sink(entry) function and an estimateGas of 'none' or 'first' if any; got ${typeof value === 'function' ? 'a function (call it: consoleLog())' : describeOption(value)}.`,
 	);
 }
 
@@ -708,6 +711,13 @@ export async function createNodeWithInternals(
 		consoleLog === undefined
 			? undefined
 			: createAddressFromString(CONSOLE_ADDRESS);
+	/**
+	 * `recordCallsTo` for the FIRST execution of an estimation (the top probe of
+	 * {@link estimateGas}'s search), set only by `consoleLog({estimateGas:
+	 * 'first'})`; unset by default, so estimation prints nothing (ADR 0018).
+	 */
+	const estimateConsoleAddress =
+		consoleLog?.estimateGas === 'first' ? consoleAddress : undefined;
 
 	const common = new Common({
 		chain: {...Mainnet, chainId, name: 'webevm'},
@@ -2715,8 +2725,9 @@ export async function createNodeWithInternals(
 		params: any,
 		block: Block,
 		budget?: bigint,
-		// Set by `eth_call` alone on a console-logging node; the estimation search
-		// never sets it, so `eth_estimateGas` and `eth_fillTransaction` print nothing.
+		// Set by `eth_call` on a console-logging node, and by the estimation search
+		// on its TOP probe alone when `consoleLog({estimateGas: 'first'})` asked for
+		// it; never on any other probe (see {@link estimateGas}).
 		recordCallsTo?: Address,
 	): Promise<ReadCallResult> {
 		const from = params.from
@@ -3011,7 +3022,13 @@ export async function createNodeWithInternals(
 	 * points callers HERE for "the number a transaction needs", so the node must
 	 * never refuse a limit it has just recommended.
 	 */
-	async function estimateGas(p: any, block: Block): Promise<bigint> {
+	async function estimateGas(
+		p: any,
+		block: Block,
+		// The `source` of the console-log entries of the top probe, when
+		// `consoleLog({estimateGas: 'first'})` records it.
+		source: 'eth_estimateGas' | 'eth_fillTransaction',
+	): Promise<bigint> {
 		const dataHex: string = p.data ?? p.input ?? '0x';
 		const isCreate = !p.to;
 		const intrinsic = intrinsicGas(dataHex, isCreate, common);
@@ -3085,12 +3102,25 @@ export async function createNodeWithInternals(
 			);
 		}
 
-		const probe = (limit: bigint) => evmCall(p, block, limit - overhead);
+		const probe = (limit: bigint, recordCallsTo?: Address) =>
+			evmCall(p, block, limit - overhead, recordCallsTo);
 
 		// 1) THE UPPER BOUND, run first: a request that cannot succeed with all the
 		// gas there is cannot succeed at all, and the caller learns that here rather
 		// than from a receipt.
-		const top = await probe(cap);
+		//
+		// CONSOLE LOGGING RECORDS THIS EXECUTION AND NO OTHER, and only when
+		// `consoleLog({estimateGas: 'first'})` asked (ADR 0018): the search
+		// re-executes the request up to about twenty times, and viem estimates
+		// before nearly every send. Its entries are delivered here, once the engine
+		// has returned and BEFORE either refusal below is thrown, so a reverting
+		// estimation still prints what it logged, as a reverting `eth_call` does.
+		const top = await probe(cap, estimateConsoleAddress);
+		if (estimateConsoleAddress !== undefined)
+			deliverConsoleLog(recordedCallsOf(top, source), (d) => ({
+				...d,
+				source,
+			}));
 		if (top.error) {
 			// TWO WAYS TO FAIL AT THE TOP, AND THEY ARE DIFFERENT PROBLEMS. A request
 			// that BURNED THE WHOLE ALLOWANCE and produced no callee bytes ran out of
@@ -3276,7 +3306,7 @@ export async function createNodeWithInternals(
 					await pureRead(() =>
 						withStateEntries(entries, () =>
 							withAuthorizations(params[0] ?? {}, 'eth_estimateGas', () =>
-								estimateGas(params[0] ?? {}, block),
+								estimateGas(params[0] ?? {}, block, 'eth_estimateGas'),
 							),
 						),
 					),
@@ -3328,6 +3358,7 @@ export async function createNodeWithInternals(
 										authorizationList: undefined,
 									},
 									blockStore.get(latestNumber)!.block,
+									'eth_fillTransaction',
 								),
 							);
 				// Fee fields: legacy iff caller passed gasPrice (and no 1559 fields),

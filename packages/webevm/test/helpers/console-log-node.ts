@@ -36,7 +36,7 @@ import type {
 	SlimNode,
 	TransactionResult,
 } from '../../src/types.js';
-import {encodeFunctionData, type Hex} from 'viem';
+import {encodeFunctionData, hexToBytes, parseAbi, type Hex} from 'viem';
 import {privateKeyToAccount} from 'viem/accounts';
 import {
 	consoleLogProbeAbi,
@@ -121,11 +121,20 @@ function client(node: SlimNode) {
 				params: [{from: account.address, to, data: input}, 'latest'],
 			}) as Promise<Hex>;
 		},
-		estimate(to: Hex, input: Hex) {
+		estimate(to: Hex, input: Hex, gas?: Hex) {
 			return node.request({
 				method: 'eth_estimateGas',
-				params: [{from: account.address, to, data: input}],
+				params: [
+					{from: account.address, to, data: input, ...(gas ? {gas} : {})},
+				],
 			}) as Promise<Hex>;
+		},
+		async fill(to: Hex, input: Hex): Promise<Hex> {
+			const r = (await node.request({
+				method: 'eth_fillTransaction',
+				params: [{from: account.address, to, data: input}],
+			})) as {tx: {gas: Hex}};
+			return r.tx.gas;
 		},
 	};
 }
@@ -628,6 +637,145 @@ async function worker(workerUrl: string) {
 	}
 }
 
+/**
+ * The stub 63/64 shortfall of ./estimate-gas.ts, in gas made available to
+ * execution: what the request consumes, and the frame budget below which it
+ * fails. Measured consumption is then NOT a workable limit, so the search runs
+ * its full course: many probes, deterministically.
+ */
+const STUB_CONSUMED_BUDGET = 246_727n;
+const STUB_SHORTFALL_BUDGET = 249_826n;
+
+/** 9. estimation prints nothing unless asked, and then only its first execution. */
+async function estimation() {
+	// ---- on the real fixture, default vs `estimateGas: 'first'` ----
+	async function real(estimateGas: 'none' | 'first' | undefined) {
+		const node = await createNode(
+			nodeOptions({
+				consoleLog: consoleLog({
+					onLog: () => {},
+					...(estimateGas === undefined ? {} : {estimateGas}),
+				}),
+			}),
+		);
+		const events: string[] = [];
+		const got: PlainEntry[] = [];
+		node.onConsoleLog((e) => {
+			got.push(plain(e));
+			events.push(`entry ${e.message}`);
+		});
+		const c = client(node);
+		const step = async <T>(run: () => Promise<T>) => {
+			const from = got.length;
+			const out = await run();
+			return {out, entries: got.slice(from)};
+		};
+		try {
+			const {address} = await c.deploy();
+			const estimate = await step(() => c.estimate(address, c.data.work(1n)));
+			const fill = await step(() => c.fill(address, c.data.work(1n)));
+			events.length = 0;
+			const reverting = await step(async () => {
+				const o = await outcome(
+					c.estimate(address, c.data.failWhole('in an estimate')),
+				);
+				events.push('settled');
+				return o;
+			});
+			const revertingOrder = [...events];
+			const refused = await step(() =>
+				outcome(c.estimate(address, c.data.work(1n), '0x1000')),
+			);
+			return {estimate, fill, reverting, revertingOrder, refused};
+		} finally {
+			await node.dispose();
+		}
+	}
+
+	// ---- on a stub whose search takes many probes, counted at the seam ----
+	async function stub(estimateGas: 'none' | 'first') {
+		let calls = 0;
+		let topBudget = 0n;
+		const recordedAt: number[] = [];
+		const engine: Engine = {
+			id: 'test-estimate-shortfall-recording',
+			recordsCalls: true,
+			async call(request): Promise<ReadCallResult> {
+				calls++;
+				if (request.gasLimit > topBudget) topBudget = request.gasLimit;
+				const enough = request.gasLimit >= STUB_SHORTFALL_BUDGET;
+				const result: ReadCallResult = {
+					returnValue: new Uint8Array(),
+					executionGasUsed: enough ? STUB_CONSUMED_BUDGET : request.gasLimit,
+					...(enough ? {} : {error: 'out of gas'}),
+				};
+				if (request.recordCallsTo === undefined) return result;
+				recordedAt.push(calls);
+				// the probe's own budget, so the entry names WHICH probe it was
+				const input = encodeFunctionData({
+					abi: parseAbi(['function log(string, uint256)']),
+					functionName: 'log',
+					args: ['probe with budget', request.gasLimit],
+				});
+				return {...result, recordedCalls: [hexToBytes(input)]};
+			},
+			async transact(): Promise<TransactionResult> {
+				throw new Error('not used');
+			},
+		};
+		const node = await createNode(
+			nodeOptions({
+				engine,
+				consoleLog: consoleLog({onLog: () => {}, estimateGas}),
+			}),
+		);
+		const got: PlainEntry[] = [];
+		node.onConsoleLog((e) => got.push(plain(e)));
+		try {
+			const out: Record<string, unknown> = {};
+			for (const method of ['eth_estimateGas', 'eth_fillTransaction']) {
+				calls = 0;
+				topBudget = 0n;
+				recordedAt.length = 0;
+				const from = got.length;
+				const r = (await node.request({
+					method,
+					params: [{from: account.address, to: account.address}],
+				})) as any;
+				out[method] = {
+					gas: method === 'eth_estimateGas' ? r : r.tx.gas,
+					calls,
+					topBudget: `${topBudget}n`,
+					recordedAt: [...recordedAt],
+					entries: got.slice(from),
+				};
+			}
+			return out;
+		} finally {
+			await node.dispose();
+		}
+	}
+
+	const sync = (f: () => unknown) => syncOutcome(f);
+	return {
+		real: {
+			omitted: await real(undefined),
+			none: await real('none'),
+			first: await real('first'),
+		},
+		stub: {none: await stub('none'), first: await stub('first')},
+		stubAnswerExpected: `0x${(21_000n + STUB_SHORTFALL_BUDGET).toString(16)}`,
+		refusedValue: sync(() => consoleLog({estimateGas: 'all' as any})),
+		refusedObject: await outcome(
+			createNode(
+				nodeOptions({
+					consoleLog: {...consoleLog(), estimateGas: true as any},
+				}),
+			),
+		),
+	};
+}
+
 export interface ConsoleLogNodeParams {
 	workerUrl: string;
 }
@@ -644,5 +792,6 @@ export async function runConsoleLogNodeChecks(params: ConsoleLogNodeParams) {
 		lyingEngine: await lyingEngine(),
 		reload: await reload(),
 		worker: await worker(params.workerUrl),
+		estimation: await estimation(),
 	};
 }

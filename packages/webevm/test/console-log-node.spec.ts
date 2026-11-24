@@ -230,4 +230,77 @@ test('console.log is delivered from transactions and eth_call, and observed only
 		/^webevm\/worker-client: onConsoleLog .*`consoleLog` option/,
 	);
 	expect(c.worker.returnedSomething).toBe(false);
+
+	// ---- 9. estimation: silent unless asked, then the first execution only ----
+	const e = c.estimation;
+	const work1 = (source: string) => [
+		{args: ['work', '1n', '1n'], message: 'work 1 1', source},
+		{
+			args: ['inside a sub-call that reverts, n =', '1n'],
+			message: 'inside a sub-call that reverts, n = 1',
+			source,
+		},
+		{
+			args: ['after the failed sub-call', true],
+			message: 'after the failed sub-call true',
+			source,
+		},
+	];
+	for (const key of ['omitted', 'none']) {
+		const d = e.real[key];
+		expect(d.estimate.entries, key).toEqual([]);
+		expect(d.fill.entries, key).toEqual([]);
+		expect(d.reverting.entries, key).toEqual([]);
+		expect(d.reverting.out, key).toMatch(/^THREW execution reverted/);
+		expect(d.refused.entries, key).toEqual([]);
+	}
+	const f = e.real.first;
+	expect(f.estimate.entries).toEqual(work1('eth_estimateGas'));
+	expect(f.fill.entries).toEqual(work1('eth_fillTransaction'));
+	// the estimate is the same on and off
+	expect(f.estimate.out).toBe(e.real.none.estimate.out);
+	expect(f.estimate.out).toBe(e.real.omitted.estimate.out);
+	expect(f.fill.out).toBe(e.real.none.fill.out);
+	// a reverting estimation delivers its first execution's entries, then throws
+	expect(f.reverting.out).toMatch(/^THREW execution reverted/);
+	expect(f.reverting.entries).toEqual([
+		{
+			args: ['about to revert:', 'in an estimate'],
+			message: 'about to revert: in an estimate',
+			source: 'eth_estimateGas',
+		},
+	]);
+	expect(f.revertingOrder).toEqual([
+		'entry about to revert: in an estimate',
+		'settled',
+	]);
+	// refused before any probe executes: nothing ran, nothing is delivered
+	expect(f.refused.out).toMatch(/^THREW gas required exceeds allowance/);
+	expect(f.refused.entries).toEqual([]);
+	// a search of many probes: ONE recorded execution, the first, at the top
+	for (const method of ['eth_estimateGas', 'eth_fillTransaction']) {
+		const none = e.stub.none[method];
+		const first = e.stub.first[method];
+		expect(first.calls, method).toBeGreaterThan(5);
+		expect(first.calls, method).toBe(none.calls);
+		expect(first.gas, method).toBe(e.stubAnswerExpected);
+		expect(none.gas, method).toBe(e.stubAnswerExpected);
+		expect(none.recordedAt, method).toEqual([]);
+		expect(none.entries, method).toEqual([]);
+		expect(first.recordedAt, method).toEqual([1]);
+		expect(first.entries, method).toEqual([
+			{
+				args: ['probe with budget', first.topBudget],
+				message: `probe with budget ${first.topBudget.slice(0, -1)}`,
+				source: method,
+			},
+		]);
+	}
+	// any other value is refused, by consoleLog() and by the node
+	expect(e.refusedValue).toMatch(
+		/^THREW webevm: consoleLog\(\{estimateGas\}\) must be 'none' \(the default\) or 'first'; got 'all'/,
+	);
+	expect(e.refusedObject).toMatch(
+		/^THREW webevm: consoleLog must be the object consoleLog\(\) returns.*estimateGas of 'none' or 'first'/,
+	);
 });

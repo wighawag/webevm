@@ -107,7 +107,17 @@ const collected: Record<string, unknown>[] = [];
  * change that grows it, and say why in the changeset. A red assertion here means
  * either that or an accidental import into the core graph.
  *
- * RE-PINNED TWENTY-NINE TIMES SINCE. Most recent first:
+ * RE-PINNED THIRTY TIMES SINCE. Most recent first:
+ *
+ * 455.4 -> 455.6 KB raw / 137.5 -> 137.6 KB gzip, by
+ * `console-log-from-the-first-estimation-on-request`: the opt-in
+ * `consoleLog({estimateGas: 'first'})` (ADR 0018). The 0.2 KB is the node
+ * recording the estimation search's top probe and delivering its entries
+ * before the estimate is returned or thrown, the `source` threaded through
+ * `estimateGas` for `eth_estimateGas` and `eth_fillTransaction`, and the
+ * longer construction refusal of a `consoleLog` object whose `estimateGas` is
+ * neither `'none'` nor `'first'`. The decoder still stays in the subpath.
+ * Still zero bytes of `revm-wasm`.
  *
  * 453.2 -> 455.4 KB raw / 136.8 -> 137.5 KB gzip, by
  * `console-log-delivered-from-transactions-and-eth-call`: `createNode`'s
@@ -509,7 +519,7 @@ const collected: Record<string, unknown>[] = [];
  * read 424.7. Run `pnpm build` before trusting this test, which is why the repo's
  * `verify` is `format:check && build && test`, in that order.
  */
-const DEFAULT_ENTRY_BASELINE = {rawKB: 455.4, gzipKB: 137.5};
+const DEFAULT_ENTRY_BASELINE = {rawKB: 455.6, gzipKB: 137.6};
 const GZIP_SLACK = 1.01;
 
 // Build + serve once for the whole file (the cut contains all backends).

@@ -763,7 +763,10 @@ export interface NodeOptions {
 	 *
 	 * OBSERVED, NEVER ANSWERED: execution is not changed in any way, so receipts,
 	 * gas, return data and the state root are identical with and without it.
-	 * `eth_estimateGas` and `eth_fillTransaction` deliver nothing. Entries are
+	 * `eth_estimateGas` and `eth_fillTransaction` deliver nothing unless
+	 * `consoleLog({estimateGas: 'first'})` asks, and then only the entries of the
+	 * estimation's first execution (`source` `'eth_estimateGas'` or
+	 * `'eth_fillTransaction'`). Entries are
 	 * delivered after the engine returns: a mined transaction's once its block is
 	 * stored (in transaction order, before the `onNewHead` emit), a read's before
 	 * its result is returned or its revert thrown. The sink and the subscribers
