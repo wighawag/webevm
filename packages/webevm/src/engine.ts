@@ -23,7 +23,8 @@
  */
 import {runTx, type VM} from '@ethereumjs/vm';
 import type {StateManagerInterface} from '@ethereumjs/common';
-import type {Address} from '@ethereumjs/util';
+import {equalsBytes, type Address} from '@ethereumjs/util';
+import type {Message} from '@ethereumjs/evm';
 import type {TypedTransaction} from '@ethereumjs/tx';
 import type {
 	Engine,
@@ -50,6 +51,9 @@ export function createEthereumjsEngine(deps: {
 	const evm = vm.evm;
 	return {
 		id: ETHEREUMJS_ENGINE_ID,
+		// This engine records calls through the EVM's own `beforeMessage` event;
+		// see {@link recordCallsDuring}.
+		recordsCalls: true,
 		async call(request: ReadCallRequest): Promise<ReadCallResult> {
 			// eth_call / eth_estimateGas must NEVER mutate state. runCall on a CREATE
 			// bumps the caller nonce (for address derivation) and writes storage, so we
@@ -70,18 +74,42 @@ export function createEthereumjsEngine(deps: {
 			stateManager.originalStorageCache?.clear?.();
 			await stateManager.checkpoint();
 			try {
-				const res = await evm.runCall({
-					caller: request.from,
-					to: request.to,
-					data: request.data,
-					value: request.value,
-					gasLimit: request.gasLimit,
-					block: request.block as any,
-				});
+				const {result: res, recordedCalls} = await recordCallsDuring(
+					evm,
+					request.recordCallsTo,
+					() =>
+						evm.runCall({
+							caller: request.from,
+							to: request.to,
+							data: request.data,
+							value: request.value,
+							gasLimit: request.gasLimit,
+							block: request.block as any,
+						}),
+				);
+				const error = res.execResult.exceptionError?.error;
 				return {
 					returnValue: res.execResult.returnValue,
 					executionGasUsed: res.execResult.executionGasUsed,
-					error: res.execResult.exceptionError?.error,
+					error,
+					...(recordedCalls === undefined
+						? {}
+						: {
+								// A TOP-LEVEL READ REFUSED BEFORE IT EXECUTED records nothing.
+								// `beforeMessage` fires BEFORE `_executeCall` moves the value
+								// (`@ethereumjs/evm` 10.1.2 `evm.js`), so for a value the sender
+								// cannot afford the listener has already seen the top-level frame,
+								// which then exits without running a single opcode. revm-wasm
+								// reports that case as a validation error with an empty list, and
+								// the seam's rule is that a frame refused before it runs is not
+								// recorded, so drop it. Matched on this EVM's own words for the
+								// two value-transfer refusals: they are only ever the TOP-LEVEL
+								// frame's error here, because a nested frame's unaffordable value is
+								// refused in `_baseCall` before it is a message at all.
+								recordedCalls: REFUSED_BEFORE_EXECUTION.has(error ?? '')
+									? []
+									: recordedCalls,
+							}),
 				};
 			} finally {
 				await stateManager.revert();
@@ -124,14 +152,24 @@ export function createEthereumjsEngine(deps: {
 			// still, so neither dropping one here nor restoring it would show up as a
 			// receipt diff. The battery asserts the NODE's answer per engine instead
 			// (`block gas limit refuses an over-limit tx; blockGasLimit lifts it`).
-			const res = await runTx(vm, {
-				// THE SEAM'S SENDER, PINNED FOR `runTx`. See {@link asSender}: this engine
-				// executes on behalf of `request.sender` and derives nothing.
-				tx: asSender(request.tx, request.sender),
-				block: request.block,
-				skipHardForkValidation: true,
-			});
+			//
+			// A transaction refused before execution (an unaffordable fee or value, a bad
+			// nonce) THROWS out of `runTx` before `runCall`, so it reaches no listener and
+			// needs none of the read path's top-level filtering below.
+			const {result: res, recordedCalls} = await recordCallsDuring(
+				evm,
+				request.recordCallsTo,
+				() =>
+					runTx(vm, {
+						// THE SEAM'S SENDER, PINNED FOR `runTx`. See {@link asSender}: this
+						// engine executes on behalf of `request.sender` and derives nothing.
+						tx: asSender(request.tx, request.sender),
+						block: request.block,
+						skipHardForkValidation: true,
+					}),
+			);
 			return {
+				...(recordedCalls === undefined ? {} : {recordedCalls}),
 				status: (res.receipt as any).status === 0 ? 0 : 1,
 				// `totalGasSpent` is NET of refunds (`gasRefund` is already subtracted),
 				// which is what a receipt reports and what the sender paid for.
@@ -154,6 +192,73 @@ export function createEthereumjsEngine(deps: {
 			};
 		},
 	};
+}
+
+/**
+ * `@ethereumjs/evm`'s words for a top-level value transfer it refused before the
+ * frame ran (`EVMError.errorMessages.INSUFFICIENT_BALANCE` / `VALUE_OVERFLOW`).
+ */
+const REFUSED_BEFORE_EXECUTION: ReadonlySet<string> = new Set([
+	'insufficient balance',
+	'value overflow',
+]);
+
+/**
+ * Run `execute` and, when `recordCallsTo` is set, record the input of every
+ * call frame whose CODE ADDRESS is that address, in execution order: the default
+ * engine's half of `recordCallsTo` / `recordedCalls`
+ * (`docs/adr/0018-console-log-is-observed-never-answered.md`).
+ *
+ * THROUGH `beforeMessage`, which `@ethereumjs/evm` 10.1.2 emits from `runCall`
+ * for EVERY frame, top-level and nested, BEFORE the frame's checkpoint, so a
+ * frame that later reverts (or sits inside one that does) is seen. The nested
+ * refusals (depth over 1024, a value the caller cannot afford) happen in the
+ * interpreter's `_baseCall` before it calls `runCall`, so a refused frame never
+ * reaches the listener, which is exactly the seam's rule. A CREATE frame has no
+ * `to` at that point (its address is derived later, in `_executeCreate`), so it
+ * has no code address to match and is never recorded. DELEGATECALL and CALLCODE
+ * carry the callee as `codeAddress` with `to` the caller, which is why the match
+ * is on `codeAddress`.
+ *
+ * OBSERVATION ONLY: the listener is synchronous (one argument, so `_emit` does
+ * not await it) and touches nothing the EVM reads, so gas and state are
+ * byte-identical with and without it. It is attached ONLY for the duration of a
+ * request that asked and removed in a `finally`, so a request without
+ * `recordCallsTo` pays nothing. The node runs one piece of work at a time
+ * (ADR 0012), so no other request's frames can reach a listener attached here.
+ *
+ * The bytes are COPIED: a nested frame's `data` is read out of the caller's
+ * memory, and a recording must not change if that memory is reused.
+ */
+async function recordCallsDuring<T>(
+	evm: VM['evm'],
+	recordCallsTo: Address | undefined,
+	execute: () => Promise<T>,
+): Promise<{result: T; recordedCalls?: Uint8Array[]}> {
+	if (recordCallsTo === undefined) return {result: await execute()};
+	const events = evm.events;
+	if (events === undefined) {
+		// Unreachable with `@ethereumjs/vm`'s own EVM, which always has an emitter;
+		// stated rather than assumed, because recording nothing here would be the
+		// silent mute the declared capability exists to prevent.
+		throw new Error(
+			`webevm: the ${ETHEREUMJS_ENGINE_ID} engine was asked to record calls, but its EVM has no event emitter to observe frames with.`,
+		);
+	}
+	const target = recordCallsTo.bytes;
+	const recordedCalls: Uint8Array[] = [];
+	const listener = (message: Message) => {
+		if (message.to === undefined) return; // a CREATE: never recorded
+		if (equalsBytes(message.codeAddress.bytes, target)) {
+			recordedCalls.push(message.data.slice());
+		}
+	};
+	events.on('beforeMessage', listener);
+	try {
+		return {result: await execute(), recordedCalls};
+	} finally {
+		events.off('beforeMessage', listener);
+	}
 }
 
 /**
@@ -235,7 +340,14 @@ function effectiveGasPrice(tx: TypedTransaction, blockBaseFee: bigint): bigint {
  *     reads like a node bug;
  *  2. it implements only HALF the seam: no usable `transact`. There is no second
  *     engine to mine on, so this is a missing capability the node cannot supply;
- *  3. its `connect(context)` throws, either because it cannot initialise (no
+ *  3. the node REQUIRES CALL RECORDING (`requirements.recordCalls`, set by a
+ *     console-logging node) and the engine does not DECLARE it
+ *     ({@link Engine.recordsCalls}). Refused here, before `connect`, because an
+ *     engine that never heard of `recordCallsTo` would ignore it and the node
+ *     would log nothing, silently (ADR 0018). When the engine says WHY it cannot
+ *     (`{unavailable: reason}`), the reason is quoted verbatim, as a `connect()`
+ *     error is. Without the requirement nothing about it is checked;
+ *  4. its `connect(context)` throws, either because it cannot initialise (no
  *     wasm, no memory) or because it refuses this node's configuration (the
  *     revm engine refuses a hardfork it cannot cost, ADR 0008).
  *
@@ -246,6 +358,7 @@ function effectiveGasPrice(tx: TypedTransaction, blockBaseFee: bigint): bigint {
 export async function connectEngine(
 	engine: Engine,
 	context: EngineContext,
+	requirements: EngineRequirements = {},
 ): Promise<void> {
 	if (typeof engine?.call !== 'function' || typeof engine?.id !== 'string') {
 		throw new Error(
@@ -272,6 +385,24 @@ export async function connectEngine(
 				`It is deliberately NOT filled in with the default @ethereumjs/evm engine: a node running one EVM for reads and another for transactions has two chances to disagree with itself, and a receipt from it cannot be attributed to the engine ${'`node.engine`'} names.`,
 		);
 	}
+	// CALL RECORDING, checked only when the node requires it, and BEFORE `connect`
+	// so a refused engine is never bound to this node (the revm engine binds to the
+	// first node it is given and refuses a second).
+	if (requirements.recordCalls === true && engine.recordsCalls !== true) {
+		const declared = engine.recordsCalls;
+		const reason =
+			typeof declared === 'object' &&
+			declared !== null &&
+			typeof declared.unavailable === 'string'
+				? ` The engine says: "${declared.unavailable}".`
+				: ` It does not declare \`recordsCalls: true\` (got ${declared === undefined ? 'nothing' : describeDeclaration(declared)}), so it would ignore \`recordCallsTo\` and the node would log nothing, silently.`;
+		throw new Error(
+			`webevm: the engine '${engine.id}' does not record calls (the \`recordsCalls\` capability), which console logging needs, so the node was NOT created.` +
+				reason +
+				` The node does NOT fall back to the default @ethereumjs/evm engine for it: a node running an engine you did not ask for is indistinguishable from one that works. ` +
+				`Pass an engine that records calls, or create the node without console logging.`,
+		);
+	}
 	try {
 		await engine.connect?.(context);
 	} catch (err) {
@@ -281,6 +412,28 @@ export async function connectEngine(
 				`Fix the engine's configuration or pass a different engine. Cause: ${message(err)}`,
 			{cause: err},
 		);
+	}
+}
+
+/**
+ * What the node REQUIRES of an engine beyond the seam's two operations, checked
+ * by {@link connectEngine} at construction. Each entry is a capability an engine
+ * DECLARES; absent or `false`, nothing about it is checked.
+ */
+export interface EngineRequirements {
+	/**
+	 * The node will set `recordCallsTo` (console logging, ADR 0018), so the engine
+	 * must declare {@link Engine.recordsCalls} as `true`.
+	 */
+	readonly recordCalls?: boolean;
+}
+
+/** A short rendering of a malformed `recordsCalls` declaration. */
+function describeDeclaration(value: unknown): string {
+	try {
+		return JSON.stringify(value) ?? typeof value;
+	} catch {
+		return typeof value;
 	}
 }
 

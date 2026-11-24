@@ -8,6 +8,10 @@
  * the revm subpath itself exists to preserve for consumers.
  *
  * Modes (one per revm spec):
+ *   - 'call-recording': the declared call-recording capability (ADR 0018):
+ *                      this engine does not declare `recordsCalls` yet, and
+ *                      `connectEngine` requiring it refuses, quoting the
+ *                      engine's reason (its outcome format and the one needed)
  *   - 'revm-engine'  : the engine itself — same results + same gas as the
  *                      default engine, the node's own state, purity, BLOCKHASH,
  *                      both wasm delivery shapes, the refused state mode
@@ -152,6 +156,7 @@ import {runBlockClockChecks} from './block-clock.js';
 import {runStateCheatAliasChecks} from './state-cheat-aliases.js';
 import {runSnapshotChecks} from './snapshots.js';
 import {createRevmEngine} from '../../src/revm.js';
+import {runRevmCallRecordingChecks} from './revm-call-recording.js';
 import {runTrieDerivedChecks} from './trie-derived.js';
 import {runStorageCollisionChecks} from './storage-collision.js';
 import {runStateTests} from './statetest.js';
@@ -178,6 +183,18 @@ const cut: CodeUnderTest = {
 				results.revmEngine = await runRevmEngineChecks({
 					runtimeWasmUrl: String(ctx.params.runtimeWasmUrl),
 				});
+			} catch (e) {
+				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
+			}
+			return {results, timings, errors, env: captureEnv()};
+		}
+
+		// The declared call-recording capability, which this engine does not have
+		// yet: refused when required, with the engine's own reason.
+		if (ctx.params.mode === 'call-recording') {
+			try {
+				results.revmCallRecording =
+					await runRevmCallRecordingChecks(bundlerResolvedWasm);
 			} catch (e) {
 				errors.push(String((e as Error)?.stack ?? (e as Error)?.message ?? e));
 			}

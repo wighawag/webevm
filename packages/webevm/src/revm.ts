@@ -208,6 +208,40 @@ export const REVM_REFUSED_HARDFORKS: Readonly<Record<string, string>> =
 	});
 
 /**
+ * The revm-wasm outcome format that carries call recording (`recordCallsTo` in,
+ * `recordedCalls` out): revm-wasm 0.6.0, revm-wasm ADR 0007.
+ */
+const REVM_CALL_RECORDING_OUTCOME_FORMAT = 5;
+
+/**
+ * WHY THIS ENGINE DOES NOT RECORD CALLS, as the `unavailable` reason of its
+ * `recordsCalls` declaration, which `connectEngine` quotes verbatim when a
+ * console-logging node is refused.
+ *
+ * Decided from the LOADED ARTIFACT, when the engine is built, never at the first
+ * call (ADR 0018). Below format {@link REVM_CALL_RECORDING_OUTCOME_FORMAT} the
+ * artifact cannot record at all. AT OR ABOVE IT (a consumer who loaded a newer
+ * revm-wasm build than this release depends on) the artifact could, but this
+ * engine does not yet pass `recordCallsTo` to it nor read `recordedCalls` back,
+ * so it still declines rather than claiming a capability it would leave mute;
+ * the reason then says that instead of blaming the artifact. Wiring it is task
+ * `console-log-on-the-revm-engine`, which raises the dependency to 0.6.0 and
+ * makes this engine declare `true`.
+ */
+function revmCallRecordingUnavailable(outcomeFormat: number): string {
+	if (outcomeFormat < REVM_CALL_RECORDING_OUTCOME_FORMAT) {
+		return (
+			`console logging needs revm-wasm outcome format ${REVM_CALL_RECORDING_OUTCOME_FORMAT} ` +
+			`(revm-wasm 0.6.0 or later); this engine's artifact has outcome format ${outcomeFormat}`
+		);
+	}
+	return (
+		`this engine's artifact has outcome format ${outcomeFormat}, which can record calls, ` +
+		`but this release of webevm/revm does not pass \`recordCallsTo\` to revm-wasm yet`
+	);
+}
+
+/**
  * Build a revm-backed engine, serving BOTH halves of the seam: `call` for the
  * node's reads and `transact` for the transactions it mines and commits (see the
  * module header for how the two differ, which is validity and nothing else).
@@ -247,6 +281,13 @@ export async function createRevmEngine(
 
 	return {
 		id: REVM_ENGINE_ID,
+
+		// CALL RECORDING IS NOT DECLARED YET, and the engine says why, so a
+		// console-logging node's refusal can name what is missing (ADR 0018). See
+		// {@link revmCallRecordingUnavailable}.
+		recordsCalls: {
+			unavailable: revmCallRecordingUnavailable(revm.outcomeFormatVersion),
+		},
 
 		connect(context: EngineContext): void {
 			// A HARDFORK THIS ENGINE CANNOT COST, refused out loud and at construction:

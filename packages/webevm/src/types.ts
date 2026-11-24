@@ -126,9 +126,45 @@ export interface ReadCallRequest {
 	readonly gasLimit: bigint;
 	/** The block the call observes (NUMBER, TIMESTAMP, COINBASE, BASEFEE...). */
 	readonly block: Block;
+	/**
+	 * OBSERVE CALLS: record the input bytes of every call frame whose CODE ADDRESS is this
+	 * address, in EXECUTION order, whatever the frame's outcome (a frame that later
+	 * reverts, or a request that reverts as a whole, is still recorded).
+	 *
+	 *   - CALL, STATICCALL, DELEGATECALL and CALLCODE are recorded, matched on the
+	 *     code address (so a DELEGATECALL into the address counts though it runs
+	 *     in the caller's storage), and so is the request's own top-level call
+	 *     when its `to` is the address.
+	 *   - A CREATE is NEVER recorded, even one that creates this address.
+	 *   - A frame REFUSED BEFORE IT RUNS is not recorded: a nested call over the
+	 *     1024 depth limit or carrying a value its caller cannot afford, and a
+	 *     top-level read whose value its sender cannot afford (its result carries
+	 *     an EMPTY list).
+	 *
+	 * The engine decodes nothing: what the bytes mean is the node's business,
+	 * above the seam, in one place. Absent, the engine records nothing and the
+	 * result carries no `recordedCalls` field at all. An engine honours it only
+	 * when it DECLARES so ({@link Engine.recordsCalls}); the node refuses an engine
+	 * that does not, at construction, rather than leaving it silently mute.
+	 *
+	 * Console logging (`hardhat/console.sol`, forge-std's `console.sol`) is a
+	 * `STATICCALL` to a fixed address that holds no code, and webevm OBSERVES those
+	 * calls rather than answering them
+	 * (`docs/adr/0018-console-log-is-observed-never-answered.md`): with this set,
+	 * return data, gas, status, logs and post-state are exactly what they are
+	 * without it.
+	 *
+	 * Named after revm-wasm's own option, as the result field is named after its
+	 * outcome field.
+	 */
+	readonly recordCallsTo?: Address;
 }
 
-/** What an engine reports back for a read-only call. */
+/**
+ * What an engine reports back for a read-only call: what `eth_call` needs, plus
+ * the one non-receipt observation field, {@link recordedCalls}, present only when
+ * the request asked for it (ADR 0018).
+ */
 export interface ReadCallResult {
 	/**
 	 * Return data (or the revert data when {@link error} is set) — the CALLEE's
@@ -168,6 +204,22 @@ export interface ReadCallResult {
 	 * the seam can tell the engines apart by it.
 	 */
 	readonly error?: string;
+	/**
+	 * THE ONE FIELD ON EITHER RESULT THAT NO RECEIPT AND NO RPC ANSWER READS (ADR
+	 * 0018, amending ADR 0006). The input bytes of every frame the request's
+	 * {@link ReadCallRequest.recordCallsTo} selected, in execution order.
+	 * PRESENT EXACTLY WHEN THE REQUEST SET `recordCallsTo` (possibly empty), and
+	 * absent otherwise, so the node can tell "recorded nothing" from "did not
+	 * record" and refuse the second when it asked.
+	 *
+	 * An OBSERVATION of execution, not an outcome of it, and not receipt data:
+	 * named `recordedCalls` (revm-wasm's outcome field) so that it cannot be
+	 * confused with EVM event `logs`, which ARE. It is the one exception to
+	 * "a result carries what a receipt (or `eth_call`) needs and nothing else",
+	 * and a later proposal to add another non-receipt field should treat it as the
+	 * exception, not a precedent.
+	 */
+	readonly recordedCalls?: readonly Uint8Array[];
 }
 
 /**
@@ -175,7 +227,8 @@ export interface ReadCallResult {
  * block it is being mined in.
  *
  * NOT an RPC-level transaction request: there is nothing to fill in here and
- * nothing optional. `eth_sendTransaction` does not exist on this node, and
+ * nothing optional about the transaction itself (the one optional field,
+ * {@link recordCallsTo}, observes the execution and changes none of it). `eth_sendTransaction` does not exist on this node, and
  * `eth_fillTransaction` returns its own object, one layer above the seam.
  *
  * THE TRANSACTION CROSSES AS THE NODE PARSED IT, for the reason
@@ -236,6 +289,13 @@ export interface TransactionRequest {
 	readonly sender: Address;
 	/** The block it is mined in (NUMBER, TIMESTAMP, COINBASE, BASEFEE, GASLIMIT). */
 	readonly block: Block;
+	/**
+	 * OBSERVE every call frame into this address, exactly as on a read: see
+	 * {@link ReadCallRequest.recordCallsTo}. It changes nothing about the
+	 * transaction's VALIDITY or its execution, which is why it is admissible on a
+	 * request that admits no relaxation (above).
+	 */
+	readonly recordCallsTo?: Address;
 }
 
 /**
@@ -254,7 +314,9 @@ export interface TransactionLog {
 
 /**
  * What an engine reports back for an executed transaction: EVERYTHING A RECEIPT
- * NEEDS FROM AN EVM, and nothing else.
+ * NEEDS FROM AN EVM, and nothing else, with ONE exception: the observation field
+ * {@link recordedCalls}, present only when the request asked for it, which no
+ * receipt reads (ADR 0018, which amends ADR 0006 for exactly this one field).
  *
  * THIS TYPE IS THE SEAM'S POINT. It is what makes two EVMs comparable field by
  * field: the default engine fills it from a `runTx` result, another fills it from
@@ -309,6 +371,12 @@ export interface TransactionResult {
 	 * receipt's `contractAddress`).
 	 */
 	readonly createdAddress?: Uint8Array;
+	/**
+	 * NOT receipt data: see {@link ReadCallResult.recordedCalls}. Recorded
+	 * whatever the transaction's status, so a transaction that reverts as a whole
+	 * still reports the calls it made before it did.
+	 */
+	readonly recordedCalls?: readonly Uint8Array[];
 }
 
 /**
@@ -448,6 +516,40 @@ export interface Engine {
 		r: Uint8Array,
 		s: Uint8Array,
 	): Uint8Array | undefined;
+	/**
+	 * THE DECLARED CALL-RECORDING CAPABILITY: whether this engine honours
+	 * {@link ReadCallRequest.recordCallsTo} (on reads AND transactions alike) by
+	 * returning `recordedCalls`. A DECLARATION, not an operation, so it does not
+	 * change {@link ecrecover} being the seam's only optional operation.
+	 *
+	 *   - `true`: the engine records. The default `@ethereumjs/evm` engine does.
+	 *   - `{unavailable: reason}`: the engine KNOWS it cannot record here, and says
+	 *     why. `reason` is quoted verbatim in the node's refusal, because only the
+	 *     engine knows it (`webevm/revm` names the revm-wasm outcome format it has
+	 *     and the one it needs).
+	 *   - absent: the engine does not record. An engine written before this member
+	 *     existed is in this state, and that is the point of DECLARING it: such an
+	 *     engine would ignore `recordCallsTo` and a console-logging node built on
+	 *     it would print nothing, silently.
+	 *
+	 * `connectEngine` (`src/engine.ts`) refuses an engine that does not declare
+	 * `true` WHEN THE NODE REQUIRES CALL RECORDING, at construction, naming the
+	 * engine id and this capability (ADR 0006 amendment 2's rule: a capability
+	 * the node cannot supply is refused at construction). When the node does not
+	 * require it, nothing is checked, so an engine that never declares it keeps
+	 * working everywhere else. See
+	 * `docs/adr/0018-console-log-is-observed-never-answered.md`.
+	 *
+	 * WHY THE REASON LIVES HERE rather than as a throw from {@link connect}: the
+	 * connect context does not tell an engine whether recording is required, so
+	 * an engine cannot refuse from there without refusing every node. One member,
+	 * a union rather than a flag plus a sibling string, so "declares it" and
+	 * "says why not" cannot both be set at once.
+	 *
+	 * READ ONCE, at construction: an engine must decide it when it is built (for
+	 * revm, from its loaded artifact), never at the first call.
+	 */
+	readonly recordsCalls?: true | {readonly unavailable: string};
 }
 
 /** Which EVM a node is running on (see {@link SlimNode.engine}). */
